@@ -21,4 +21,10 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 imessage-database = { path = "../imessage-database" }
 imessage-exporter = { path = "../imessage-exporter" }
+
+# The embedded HTML preview uses the system webview, which composes with the
+# winit-based window only on macOS and Windows. Other platforms fall back to the
+# egui bubble preview and "Open in browser", so they don't depend on `wry`
+# (which on Linux would otherwise require WebKitGTK development libraries).
+[target.'cfg(any(target_os = "macos", target_os = "windows"))'.dependencies]
 wry = "0.55.1"

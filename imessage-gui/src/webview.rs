@@ -15,6 +15,7 @@ use eframe::egui;
 pub const SUPPORTED: bool = cfg!(any(target_os = "macos", target_os = "windows"));
 
 /// Shown before any conversation has been previewed.
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 const PLACEHOLDER_HTML: &str = "<!DOCTYPE html><html><head><meta charset=\"utf-8\">\
 <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"></head>\
 <body style=\"margin:0;height:100vh;display:flex;align-items:center;justify-content:center;\
@@ -48,6 +49,22 @@ mod imp {
                     size: PhysicalSize::new(0, 0).into(),
                 })
                 .with_html(PLACEHOLDER_HTML)
+                // Links (and mailto:/tel:) open in the default app, not in the
+                // preview pane; only the local preview file (and its in-page
+                // anchors) navigate inside the webview.
+                .with_navigation_handler(|url| {
+                    if super::is_local_preview_url(&url) {
+                        true
+                    } else {
+                        let _ = open::that_detached(&url);
+                        false
+                    }
+                })
+                // target="_blank" links request a new window; open externally too.
+                .with_new_window_req_handler(|url, _features| {
+                    let _ = open::that_detached(&url);
+                    wry::NewWindowResponse::Deny
+                })
                 .build_as_child(frame)
                 .ok()?;
             Some(Self { view })
@@ -96,6 +113,7 @@ mod stub {
 }
 
 /// Webview bounds in physical pixels, derived from an egui rect.
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 struct PreviewBounds {
     x: i32,
     y: i32,
@@ -103,6 +121,7 @@ struct PreviewBounds {
     h: u32,
 }
 
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 impl PreviewBounds {
     fn from_rect(rect: egui::Rect, pixels_per_point: f32) -> Self {
         let scale = pixels_per_point.max(0.0);
@@ -116,6 +135,15 @@ impl PreviewBounds {
 }
 
 /// Build a `file://` URL for a local path.
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 fn file_url(path: &Path) -> String {
     format!("file://{}", path.display())
+}
+
+/// Whether a URL refers to the local preview document (so it should load inside
+/// the webview) rather than an external link (which opens in the default app).
+/// In-page anchors keep the `file://` scheme, so threaded replies still work.
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+fn is_local_preview_url(url: &str) -> bool {
+    url.starts_with("file://") || url.starts_with("about:") || url.starts_with("data:")
 }
