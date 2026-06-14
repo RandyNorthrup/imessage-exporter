@@ -1,10 +1,9 @@
 use imessage_database::{
-    error::table::TableError,
     message_types::variants::{Tapback, TapbackAction, Variant},
     tables::{attachment::Attachment, messages::Message},
 };
 
-use crate::app::runtime::Config;
+use crate::app::{error::RuntimeError, runtime::Config};
 
 /// Format-agnostic shape for tapback rendering. The `payload` carried by
 /// [`Sticker`] is generic so each exporter can use its own pre-rendered type.
@@ -37,7 +36,7 @@ pub(crate) fn resolve_tapback<'a, S>(
     msg: &'a Message,
     config: &'a Config,
     sticker_renderer: impl FnOnce(&mut Attachment) -> S,
-) -> Result<Option<TapbackKind<'a, S>>, TableError> {
+) -> Result<Option<TapbackKind<'a, S>>, RuntimeError> {
     let Variant::Tapback(_, action, tapback) = msg.variant() else {
         unreachable!(
             "resolve_tapback called with non-Tapback variant: {:?}",

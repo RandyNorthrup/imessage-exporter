@@ -1,8 +1,9 @@
 use imessage_database::{
-    error::{message::MessageError, plist::PlistParseError},
+    error::plist::PlistParseError,
     message_types::{
         app::{AppMessage, CheckInKind},
-        digital_touch,
+        business_chat::BusinessMessage,
+        digital_touch::DigitalTouchMessage,
         handwriting::HandwrittenMessage,
         url::URLMessage,
         variants::{BalloonProvider, CustomBalloon, URLOverride, Variant},
@@ -12,10 +13,13 @@ use imessage_database::{
         messages::Message,
         table::{FITNESS_RECEIVER, YOU},
     },
-    util::{dates::format, plist::parse_ns_keyed_archiver},
+    util::{bundle_id::parse_balloon_bundle_id, dates::format, plist::parse_ns_keyed_archiver},
 };
 
-use crate::{app::runtime::Config, exporters::formatter::BalloonFormatter};
+use crate::{
+    app::{error::RuntimeError, runtime::Config},
+    exporters::formatter::BalloonFormatter,
+};
 
 // MARK: Dispatch
 
@@ -27,12 +31,10 @@ pub fn dispatch_app_balloon<F: BalloonFormatter>(
     message: &Message,
     attachments: &mut Vec<Attachment>,
     config: &Config,
-) -> Result<String, MessageError> {
+) -> Result<String, RuntimeError> {
     // First, determine if is a balloon message; if it is not, bail out early
     let Variant::App(balloon) = message.variant() else {
-        return Err(MessageError::PlistParseError(
-            PlistParseError::WrongMessageType,
-        ));
+        return Err(PlistParseError::WrongMessageType.into());
     };
 
     // Handwritten messages use a different payload type
@@ -41,9 +43,7 @@ pub fn dispatch_app_balloon<F: BalloonFormatter>(
     {
         return match HandwrittenMessage::from_payload(&payload) {
             Ok(bubble) => Ok(formatter.format_handwriting(message, &bubble)),
-            Err(why) => Err(MessageError::PlistParseError(
-                PlistParseError::HandwritingError(why),
-            )),
+            Err(why) => Err(PlistParseError::HandwritingError(why).into()),
         };
     }
 
@@ -51,11 +51,9 @@ pub fn dispatch_app_balloon<F: BalloonFormatter>(
     if message.is_digital_touch()
         && let Some(payload) = message.raw_payload_data(config.data_source.db())
     {
-        return match digital_touch::from_payload(&payload) {
-            Some(bubble) => Ok(formatter.format_digital_touch(message, &bubble)),
-            None => Err(MessageError::PlistParseError(
-                PlistParseError::DigitalTouchError,
-            )),
+        return match DigitalTouchMessage::from_payload(&payload) {
+            Ok(bubble) => Ok(formatter.format_digital_touch(message, &bubble)),
+            Err(why) => Err(PlistParseError::DigitalTouchError(why).into()),
         };
     }
 
@@ -64,7 +62,7 @@ pub fn dispatch_app_balloon<F: BalloonFormatter>(
         let poll = message.as_poll(config.data_source.db())?;
         return match poll {
             Some(poll) => Ok(formatter.format_poll(&poll)),
-            None => Err(MessageError::PlistParseError(PlistParseError::PollError)),
+            None => Err(PlistParseError::PollError.into()),
         };
     }
 
@@ -75,7 +73,7 @@ pub fn dispatch_app_balloon<F: BalloonFormatter>(
         if message.is_url() && message.text.is_some() {
             return Ok(formatter.format_url(message, &URLMessage::default()));
         }
-        return Err(MessageError::PlistParseError(PlistParseError::NoPayload));
+        return Err(PlistParseError::NoPayload.into());
     };
 
     let parsed = parse_ns_keyed_archiver(&payload)?;
@@ -100,16 +98,26 @@ pub fn dispatch_app_balloon<F: BalloonFormatter>(
                 CustomBalloon::Slideshow => formatter.format_slideshow(&bubble),
                 CustomBalloon::CheckIn => formatter.format_check_in(&bubble),
                 CustomBalloon::FindMy => formatter.format_find_my(&bubble),
+                CustomBalloon::Business => match BusinessMessage::from_map(&parsed) {
+                    Ok(business) => formatter.format_business(&business),
+                    // Older business payloads use the same bundle ID but do
+                    // not carry a supported interactive schema. Preserve the
+                    // generic app-card fallback for those rows.
+                    Err(_) => {
+                        let bundle_id =
+                            parse_balloon_bundle_id(message.balloon_bundle_id.as_deref())
+                                .unwrap_or_default();
+                        formatter.format_generic_app(&bubble, bundle_id, attachments, message)
+                    }
+                },
                 CustomBalloon::Polls
                 | CustomBalloon::Handwriting
                 | CustomBalloon::DigitalTouch
                 | CustomBalloon::URL => {
-                    return Err(MessageError::PlistParseError(
-                        PlistParseError::WrongMessageType,
-                    ));
+                    return Err(PlistParseError::WrongMessageType.into());
                 }
             },
-            Err(why) => return Err(MessageError::PlistParseError(why)),
+            Err(why) => return Err(why.into()),
         }
     };
 

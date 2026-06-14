@@ -1,5 +1,5 @@
 /*!
- This module represents common (but not all) columns in the `attachment` table.
+ Attachment table rows and attachment file path helpers.
 */
 
 use plist::Value;
@@ -29,38 +29,39 @@ use crate::{
 };
 
 // MARK: Constants
-/// The default root directory for iMessage database files, which is replaced with the custom attachment root if provided
+/// Default macOS Messages root used by attachment paths.
 pub const DEFAULT_MESSAGES_ROOT: &str = "~/Library/Messages";
 /// Alternate root directory used by a jailbroken iOS device's `sms.db`
 ///
 /// The `sms.db` database uses the same schema and path conventions as a macOS `chat.db`,
 /// but attachment paths are rooted under `~/Library/SMS` instead of `~/Library/Messages`.
 pub const DEFAULT_SMS_ROOT: &str = "~/Library/SMS";
-/// The default root directory for iMessage attachment data
+/// Default macOS attachment root.
 pub const DEFAULT_ATTACHMENT_ROOT: &str = "~/Library/Messages/Attachments";
-/// The default root directory for iMessage sticker cache data
+/// Default macOS sticker cache root.
 pub const DEFAULT_STICKER_CACHE_ROOT: &str = "~/Library/Messages/StickerCache";
 const COLS: &str = "a.rowid, a.guid, a.filename, a.uti, a.mime_type, a.transfer_name, a.total_bytes, a.is_sticker, a.hide_attachment, a.emoji_image_short_description";
 
 // MARK: MediaType
 /// Represents the [MIME type](https://developer.mozilla.org/en-US/docs/Web/HTTP/Basics_of_HTTP/MIME_Types) of a message's attachment data
 ///
-/// The interior `str` contains the subtype, i.e. `x-m4a` for `audio/x-m4a`
+/// The borrowed string stores the subtype for known categories, e.g. `x-m4a`
+/// for `audio/x-m4a`.
 #[derive(Debug, PartialEq, Eq)]
 pub enum MediaType<'a> {
-    /// Image MIME type, such as `"image/png"` or `"image/jpeg"`
+    /// Image MIME type, such as `"image/png"` or `"image/jpeg"`.
     Image(&'a str),
-    /// Video MIME type, such as `"video/mp4"` or `"video/quicktime"`
+    /// Video MIME type, such as `"video/mp4"` or `"video/quicktime"`.
     Video(&'a str),
-    /// Audio MIME type, such as `"audio/mp3"` or `"audio/x-m4a`"
+    /// Audio MIME type, such as `"audio/mp3"` or `"audio/x-m4a"`.
     Audio(&'a str),
-    /// Text MIME type, such as `"text/plain"` or `"text/html"`
+    /// Text MIME type, such as `"text/plain"` or `"text/html"`.
     Text(&'a str),
-    /// Application MIME type, such as `"application/pdf"` or `"application/json"`
+    /// Application MIME type, such as `"application/pdf"` or `"application/json"`.
     Application(&'a str),
-    /// Other MIME types that don't fit the standard categories
+    /// Other MIME type stored as the complete MIME string.
     Other(&'a str),
-    /// Unknown MIME type when the type could not be determined
+    /// MIME type could not be determined.
     Unknown,
 }
 
@@ -88,33 +89,33 @@ impl MediaType<'_> {
     }
 }
 
-/// Represents a single row in the `attachment` table.
+/// Row from the `attachment` table.
 #[derive(Debug)]
 pub struct Attachment {
-    /// The unique identifier for the attachment in the database
+    /// Attachment row ID.
     pub rowid: i32,
     /// The attachment's GUID. Matches the `__kIMFileTransferGUIDAttributeName`
     /// carried on the message body's attachment ranges, letting the exporter
     /// pair a body placeholder with its resolved attachment by identity rather
     /// than by position.
     pub guid: Option<String>,
-    /// The path to the file on disk
+    /// Path to the file on disk as stored in the database.
     pub filename: Option<String>,
-    /// The [Uniform Type Identifier](https://developer.apple.com/library/archive/documentation/FileManagement/Conceptual/understanding_utis/understand_utis_intro/understand_utis_intro.html)
+    /// The [Uniform Type Identifier](https://developer.apple.com/library/archive/documentation/FileManagement/Conceptual/understanding_utis/understand_utis_intro/understand_utis_intro.html).
     pub uti: Option<String>,
-    /// String representation of the file's MIME type
+    /// MIME type string.
     pub mime_type: Option<String>,
-    /// The name of the file when sent or received
+    /// Original transfer filename.
     pub transfer_name: Option<String>,
-    /// The total amount of data transferred over the network (not necessarily the size of the file)
+    /// Total bytes recorded by Messages.
     pub total_bytes: i64,
-    /// `true` if the attachment was a sticker, else `false`
+    /// `true` when the attachment is a sticker.
     pub is_sticker: bool,
-    /// Flag indicating whether the attachment should be hidden in the UI
+    /// Messages UI hide flag.
     pub hide_attachment: i32,
-    /// The prompt used to generate a Genmoji
+    /// Prompt used to generate a Genmoji.
     pub emoji_description: Option<String>,
-    /// Auxiliary data to denote that an attachment has been copied
+    /// Auxiliary data to denote that an attachment has been copied or converted.
     pub copied_path: Option<PathBuf>,
 }
 
@@ -143,13 +144,16 @@ impl Table for Attachment {
 
 // MARK: Impl
 impl Attachment {
-    /// Gets a Vector of attachments associated with a single message
+    /// Load attachments associated with one message.
     ///
-    /// The order of the attachments aligns with the order of the attachment
+    /// Rows are returned in the `message_attachment_join` table's order, which is
+    /// not guaranteed to align with the order of the attachment
     /// [`AttributedRange`](crate::tables::messages::models::AttributedRange)s
     /// (those whose [`attachment`](crate::tables::messages::models::AttributedRange::attachment)
-    /// is `Some`) across the message's
+    /// is `Some`) in the message's
     /// [`attributed_body()`](crate::tables::messages::message::Message::attributed_body).
+    /// Callers pairing body ranges to rows should match on the file-transfer GUID
+    /// rather than relying on position.
     pub fn from_message(db: &Connection, msg: &Message) -> Result<Vec<Attachment>, TableError> {
         let mut out_l = vec![];
         if msg.has_attachments() {
@@ -180,7 +184,7 @@ impl Attachment {
         Ok(out_l)
     }
 
-    /// Get the media type of an attachment
+    /// Classify this attachment's MIME type.
     #[must_use]
     pub fn mime_type(&'_ self) -> MediaType<'_> {
         match &self.mime_type {
@@ -200,11 +204,9 @@ impl Attachment {
                 }
             }
             None => {
-                // Fallback to `uti` if the MIME type cannot be inferred
                 if let Some(uti) = &self.uti {
                     match uti.as_str() {
-                        // This type is for audio messages, which are sent in `caf` format
-                        // https://developer.apple.com/library/archive/documentation/MusicAudio/Reference/CAFSpec/CAF_overview/CAF_overview.html
+                        // Audio messages are stored as Core Audio Format files.
                         "com.apple.coreaudio-format" => MediaType::Audio("x-caf; codecs=opus"),
                         _ => MediaType::Unknown,
                     }
@@ -228,7 +230,7 @@ impl Attachment {
             )
     }
 
-    /// Read the attachment from the disk into a vector of bytes in memory
+    /// Read the attachment file into memory.
     ///
     /// `db_path` is the path to the root of the backup directory.
     /// This is the same path used by [`get_connection()`](crate::tables::table::get_connection).
@@ -252,7 +254,7 @@ impl Attachment {
         Ok(None)
     }
 
-    /// Determine the [`StickerEffect`] of a sticker message
+    /// Parse the [`StickerEffect`] for a sticker attachment.
     ///
     /// `db_path` is the path to the root of the backup directory.
     /// This is the same path used by [`get_connection()`](crate::tables::table::get_connection).
@@ -276,7 +278,7 @@ impl Attachment {
         Ok(Some(StickerEffect::default()))
     }
 
-    /// Get the path to an attachment, if it exists
+    /// Return the stored attachment path.
     #[must_use]
     pub fn path(&self) -> Option<&Path> {
         match &self.filename {
@@ -285,7 +287,7 @@ impl Attachment {
         }
     }
 
-    /// Get the file name extension of an attachment, if it exists
+    /// Return the stored attachment path extension.
     #[must_use]
     pub fn extension(&self) -> Option<&str> {
         match self.path() {
@@ -297,21 +299,22 @@ impl Attachment {
         }
     }
 
-    /// Get a reasonable filename for an attachment
+    /// Return the transfer filename, falling back to the stored path.
     ///
-    /// If the [`transfer_name`](Self::transfer_name) field is populated, use that. If it is not present, fall back to the `filename` field.
+    /// [`transfer_name`](Self::transfer_name) is the display filename when present; [`filename`](Self::filename) is the
+    /// database path.
     #[must_use]
     pub fn filename(&self) -> Option<&str> {
         self.transfer_name.as_deref().or(self.filename.as_deref())
     }
 
-    /// Get a human readable file size for an attachment using [`format_file_size`]
+    /// Return [`total_bytes`](Self::total_bytes) as a human-readable size.
     #[must_use]
     pub fn file_size(&self) -> String {
         format_file_size(u64::try_from(self.total_bytes).unwrap_or(0))
     }
 
-    /// Get the total attachment bytes referenced in the table
+    /// Sum attachment bytes, applying date filters from [`QueryContext`].
     pub fn get_total_attachment_bytes(
         db: &Connection,
         context: &QueryContext,
@@ -349,13 +352,13 @@ impl Attachment {
             .map(|res: i64| u64::try_from(res).unwrap_or(0))?)
     }
 
-    /// Given a platform and database source, resolve the path for the current attachment
+    /// Resolve the on-disk path for this attachment.
     ///
     /// For macOS, `db_path` is unused. For iOS, `db_path` is the path to the root of the backup directory.
     /// This is the same path used by [`get_connection()`](crate::tables::table::get_connection).
     ///
-    /// On iOS, file names are derived from SHA-1 hash of `MediaDomain-` concatenated with the relative [`self.filename()`](Self::filename).
-    /// Between the domain and the path there is a dash. Read more [here](https://theapplewiki.com/index.php?title=ITunes_Backup).
+    /// On encrypted iOS backups, file names are derived from the SHA-1 hash of
+    /// `MediaDomain-` plus the relative [`filename`](Self::filename). Read more [here](https://theapplewiki.com/index.php?title=ITunes_Backup).
     ///
     /// Use the optional `custom_attachment_root` parameter when attachment data is stored under a
     /// different Messages root than the database expects. This replaces the leading Messages root,
@@ -392,7 +395,7 @@ impl Attachment {
         }
     }
 
-    /// Compute diagnostic data for the Attachments table
+    /// Compute diagnostic data for the `attachment` table.
     ///
     /// Counts the number of attachments that are missing, either because the path is missing from the
     /// table or the path does not point to a file.
@@ -498,7 +501,7 @@ impl Attachment {
         }
     }
 
-    /// Generate a macOS path for an attachment
+    /// Resolve a macOS attachment path.
     fn gen_macos_attachment(path: &str) -> String {
         if path.starts_with('~') {
             return path.replacen('~', &home(), 1);
@@ -506,7 +509,7 @@ impl Attachment {
         path.to_string()
     }
 
-    /// Generate an iOS path for an attachment
+    /// Resolve an encrypted iOS backup attachment path.
     fn gen_ios_attachment(file_path: &str, db_path: &Path) -> Option<String> {
         let input = file_path.get(2..)?;
         let digest = Sha1::digest(format!("MediaDomain-{input}").as_bytes());
@@ -519,10 +522,9 @@ impl Attachment {
         Some(format!("{}/{directory}/{filename}", db_path.display()))
     }
 
-    /// Get an attachment's plist from the [`STICKER_USER_INFO`] BLOB column
+    /// Parse the [`STICKER_USER_INFO`] `BLOB` column as a property list.
     ///
-    /// Calling this hits the database, so it is expensive and should
-    /// only get invoked when needed.
+    /// Calling this reads a `BLOB` from the database.
     ///
     /// This column contains data used for sticker attachments.
     fn sticker_info(&self, db: &Connection) -> Option<Value> {
@@ -530,20 +532,18 @@ impl Attachment {
             .ok()
     }
 
-    /// Get an attachment's plist from the [`ATTRIBUTION_INFO`] BLOB column
+    /// Parse the [`ATTRIBUTION_INFO`] `BLOB` column as a property list.
     ///
-    /// Calling this hits the database, so it is expensive and should
-    /// only get invoked when needed.
+    /// Calling this reads a `BLOB` from the database.
     ///
     /// This column contains metadata used by image attachments.
     fn attribution_info(&self, db: &Connection) -> Option<Value> {
         Value::from_reader(self.get_blob(db, ATTACHMENT, ATTRIBUTION_INFO, self.rowid.into())?).ok()
     }
 
-    /// Parse a sticker's source from the Bundle ID stored in [`STICKER_USER_INFO`] `plist` data
+    /// Parse a sticker's source from the bundle ID in [`STICKER_USER_INFO`].
     ///
-    /// Calling this hits the database, so it is expensive and should
-    /// only get invoked when needed.
+    /// Calling this reads a `BLOB` from the database.
     pub fn get_sticker_source(&self, db: &Connection) -> Option<StickerSource> {
         if let Some(sticker_info) = self.sticker_info(db) {
             let plist = plist_as_dictionary(&sticker_info).ok()?;
@@ -553,10 +553,9 @@ impl Attachment {
         None
     }
 
-    /// Parse a sticker's application name stored in [`ATTRIBUTION_INFO`] `plist` data
+    /// Parse a sticker's source application name from [`ATTRIBUTION_INFO`].
     ///
-    /// Calling this hits the database, so it is expensive and should
-    /// only get invoked when needed.
+    /// Calling this reads a `BLOB` from the database.
     pub fn get_sticker_source_application_name(&self, db: &Connection) -> Option<String> {
         if let Some(attribution_info) = self.attribution_info(db) {
             let plist = plist_as_dictionary(&attribution_info).ok()?;

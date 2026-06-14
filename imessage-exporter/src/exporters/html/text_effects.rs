@@ -1,6 +1,14 @@
 use std::borrow::Cow;
 
-use imessage_database::message_types::text_effects::{Animation, Style, TextEffect, Unit};
+use imessage_database::message_types::text_effects::{
+    animation::Animation,
+    detected::{
+        address::DetectedAddress, currency::DetectedCurrency, flight::Flight,
+        shipment_tracking::ShipmentTracking, unit::Unit,
+    },
+    style::Style,
+    text_effect::TextEffect,
+};
 
 use crate::{
     app::sanitizers::sanitize_html,
@@ -15,9 +23,13 @@ impl<'a> TextEffectFormatter<'a> for HTML<'a> {
             TextEffect::Mention(mentioned) => Cow::Owned(self.format_mention(text, mentioned)),
             TextEffect::Link(url) => Cow::Owned(self.format_link(text, url)),
             TextEffect::OTP => Cow::Owned(self.format_otp(text)),
+            TextEffect::Address(address) => Cow::Owned(self.format_address(text, address)),
             TextEffect::Styles(styles) => Cow::Owned(self.format_styles(text, styles)),
             TextEffect::Animated(animation) => Cow::Owned(self.format_animated(text, animation)),
             TextEffect::Conversion(unit) => Cow::Owned(self.format_conversion(text, unit)),
+            TextEffect::Currency(currency) => Cow::Owned(self.format_currency(text, currency)),
+            TextEffect::Tracking(tracking) => Cow::Owned(self.format_tracking(text, tracking)),
+            TextEffect::Flight(flight) => Cow::Owned(self.format_flight(text, flight)),
         }
     }
 
@@ -36,7 +48,23 @@ impl<'a> TextEffectFormatter<'a> for HTML<'a> {
         format!("<u>{text}</u>")
     }
 
+    fn format_address(&self, text: &str, _: &DetectedAddress) -> String {
+        format!("<u>{text}</u>")
+    }
+
     fn format_conversion(&self, text: &str, _: &Unit) -> String {
+        format!("<u>{text}</u>")
+    }
+
+    fn format_currency(&self, text: &str, _: &DetectedCurrency) -> String {
+        format!("<u>{text}</u>")
+    }
+
+    fn format_tracking(&self, text: &str, _: &ShipmentTracking) -> String {
+        format!("<u>{text}</u>")
+    }
+
+    fn format_flight(&self, text: &str, _: &Flight) -> String {
         format!("<u>{text}</u>")
     }
 

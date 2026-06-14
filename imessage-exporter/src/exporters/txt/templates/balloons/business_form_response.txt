@@ -1,0 +1,3 @@
+{% if let Some(summary) = summary.get() %}{{ summary }}
+{% endif %}{% for answer in answers %}- {{ answer.question }} → {{ answer.answer }}
+{% endfor %}

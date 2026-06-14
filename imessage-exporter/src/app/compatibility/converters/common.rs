@@ -1,5 +1,5 @@
 /*!
- Defines routines common across all converters.
+ Shared file and process helpers for attachment converters.
 */
 use std::{
     ffi::OsStr,
@@ -83,10 +83,9 @@ pub(super) fn ensure_output_dir(to: &Path) -> Option<()> {
     Some(())
 }
 
-/// Copy a file or directory without altering it
+/// Copy a file or directory without altering it.
 pub(crate) fn copy_raw(from: &Path, to: &Path) {
     if from.is_dir() {
-        // Ensure the directory tree exists
         if let Err(why) = create_dir_all(to) {
             eprintln!("Unable to create directory {}: {why}", to.display());
             return;
@@ -132,7 +131,7 @@ pub(crate) fn copy_raw(from: &Path, to: &Path) {
     }
 }
 
-/// Update the metadata of a copied file, falling back to the original file's metadata if necessary
+/// Update copied-file timestamps from the message date and source metadata.
 pub(crate) fn update_file_metadata(from: &Path, to: &Path, message: &Message, config: &Config) {
     if to.is_dir() {
         return;
@@ -140,7 +139,7 @@ pub(crate) fn update_file_metadata(from: &Path, to: &Path, message: &Message, co
 
     // Update file metadata
     if let Ok(metadata) = metadata(from) {
-        // The modification time is the message's date, otherwise the original file's modification time
+        // Prefer the message date for mtime, then fall back to the source file.
         let mtime = match message.date(config.offset) {
             Ok(date) => unix_to_system_time(date.timestamp(), date.timestamp_subsec_nanos())
                 .or_else(|| metadata.modified().ok()),

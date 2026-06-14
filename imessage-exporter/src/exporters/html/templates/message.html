@@ -1,5 +1,5 @@
 <div class="message" {%- if anchor_id %} id="r-{{ guid }}" {%- endif %}>
-    <div class="{% if is_from_me %}sent {{ service }}{% else %}received{% endif %}">
+    <div class="{% if is_from_me %}sent {{ service }}{% else %}received{% endif %}{% if digital_touch %} digital_touch_bubble{% endif %}">
         <p>
             <span class="timestamp">
                 <a title="Reveal in Messages app" href="sms://open?message-guid={{ guid }}">{{ date }}</a>

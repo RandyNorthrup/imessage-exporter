@@ -53,14 +53,14 @@ pub fn resolve_unsent_actor<'a>(
     }
 }
 
-/// Where an edit event sits relative to the previous one in the history.
+/// Relative position of an edit event in the edit history.
 pub enum EditDiff {
-    /// First event in the history; no prior to diff against.
+    /// First event in the history.
     First,
     /// Diff couldn't be computed (invalid timestamps or `readable_diff`
     /// returned `None`). Renderers typically suppress the prefix in this case.
     Failed,
-    /// Human-readable diff between this event and the previous one
+    /// Human-readable diff between this event and the preceding one
     /// (e.g. `"3 minutes"`).
     Computed(String),
 }
@@ -79,7 +79,7 @@ pub struct NormalizedEditEvent<'a> {
     /// `event.components` passed through for renderers that need to format
     /// the original text attributes.
     pub components: &'a [BubbleComponent],
-    /// Position of this event relative to the previous one in the history.
+    /// Position of this event relative to the preceding one.
     /// See [`EditDiff`].
     pub diff_since_previous: EditDiff,
     /// Raw iMessage timestamp for this event. Renderers that need the

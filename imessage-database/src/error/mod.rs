@@ -3,6 +3,7 @@
 */
 
 pub mod attachment;
+pub mod digital_touch;
 pub mod handwriting;
 pub mod message;
 pub mod plist;

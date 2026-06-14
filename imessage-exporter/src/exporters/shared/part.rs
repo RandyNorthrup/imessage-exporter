@@ -18,7 +18,7 @@ use crate::exporters::formatter::{MessageFormatter, PartBodyBuilder};
 /// returns rows in the join's (unspecified) order, so positional pairing can
 /// mis-order a message with several attachments. Matching by GUID keeps every
 /// placeholder bound to its own attachment regardless of join order, and the
-/// resolved attachments always carry a GUID (it's a column), so this is the
+/// resolved attachments always carry a GUID from the database column, so this is the
 /// path for any typedstream-parsed body.
 ///
 /// Ranges that carry no GUID (only the legacy (non-typedstream)

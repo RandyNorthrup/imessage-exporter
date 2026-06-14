@@ -1,9 +1,8 @@
 /*!
- The legacy/fallback simple `typedstream` parser.
+ Legacy text parser for `streamtyped` body blobs.
 
- Contains logic to parse text from `attributedBody`'s `typedstream` data.
-
- It is called `streamtyped` because that is the header string contained in the data.
+ This parser extracts plain text from `attributedBody` when the full
+ typedstream deserializer cannot reconstruct the attributed string.
 */
 
 use crate::error::streamtyped::StreamTypedError;
@@ -18,7 +17,7 @@ const START_PATTERN: [u8; 2] = [0x0001, 0x002b];
 /// - <https://www.compart.com/en/unicode/U+0084>
 const END_PATTERN: [u8; 2] = [0x0086, 0x0084];
 
-/// Parse the body [text](crate::tables::messages::message::Message::text) from a known type of `typedstream` `attributedBody` file.
+/// Parse plain body [text](crate::tables::messages::message::Message::text) from a `streamtyped` `attributedBody` blob.
 ///
 /// `attributedBody` `typedstream` data looks like:
 ///
@@ -28,10 +27,9 @@ const END_PATTERN: [u8; 2] = [0x0086, 0x0084];
 ///
 /// In that example, the returned body text would be `"Example message"`.
 ///
-/// ## Legacy parsing
+/// ## Parser scope
 ///
-/// If the `typedstream` data cannot be deserialized, we fall back to this legacy string parsing algorithm that
-/// only supports unstyled text.
+/// This string parser only supports unstyled text.
 ///
 /// If the message has attachments, there will be one [`U+FFFC`](https://www.compart.com/en/unicode/U+FFFC) character
 /// for each attachment and one [`U+FFFD`](https://www.compart.com/en/unicode/U+FFFD) for app messages that we need
@@ -45,10 +43,10 @@ const END_PATTERN: [u8; 2] = [0x0086, 0x0084];
 /// let message_text = "\u{FFFC}Check out this photo!";
 /// ```
 ///
-/// Will have a `body()` of:
+/// produces fallback body components like:
 ///
 /// ```
-/// use imessage_database::message_types::text_effects::TextEffect;
+/// use imessage_database::message_types::text_effects::text_effect::TextEffect;
 /// use imessage_database::tables::messages::{models::{AttributedRange, BubbleComponent, AttachmentMeta}};
 ///
 /// let result = vec![
@@ -90,18 +88,16 @@ pub fn parse(mut stream: Vec<u8>) -> Result<String, StreamTypedError> {
     match String::from_utf8(stream)
         .map_err(|non_utf8| String::from_utf8_lossy(non_utf8.as_bytes()).into_owned())
     {
-        // If the bytes are valid unicode, only one char prefixes the actual message
+        // Valid UTF-8 bodies carry one non-text prefix character.
         // ['\u{6}', 'T', ...] where `T` is the first real char
-        // The prefix char is not always the same
         Ok(string) => drop_chars(1, string),
-        // If the bytes are not valid unicode, 3 chars prefix the actual message
+        // Lossy-decoded bodies carry three replacement/prefix characters.
         // ['�', '�', '\0', 'T', ...] where `T` is the first real char
-        // The prefix chars are not always the same
         Err(string) => drop_chars(3, string),
     }
 }
 
-/// Drop `offset` chars from the front of a String
+/// Drop `offset` chars from the front of a string.
 fn drop_chars(offset: usize, mut string: String) -> Result<String, StreamTypedError> {
     // Find the index of the specified character offset
     let (position, _) = string

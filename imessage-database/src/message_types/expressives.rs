@@ -1,5 +1,7 @@
 /*!
  [Expressives](https://support.apple.com/en-us/HT206894) are effects that you can select by tapping and holding the send button.
+
+ The data is stored on messages through the `expressive_send_style_id` field.
 */
 
 use std::fmt;
@@ -44,7 +46,7 @@ pub enum ScreenEffect {
     Spotlight,
 }
 
-/// Expressive effect container.
+/// Parsed value of a message's `expressive_send_style_id`.
 ///
 /// Read more about expressive messages [here](https://www.imore.com/how-to-use-bubble-and-screen-effects-imessage-iphone-ipad).
 ///
@@ -66,13 +68,13 @@ pub enum ScreenEffect {
 /// - `com.apple.messages.effect.CKSpotlightEffect`
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum Expressive<'a> {
-    /// Effects that use the entire screen
+    /// Effect that uses the full message view.
     Screen(ScreenEffect),
-    /// Effects that display on a single bubble
+    /// Effect that displays on a single bubble.
     Bubble(BubbleEffect),
-    /// Container for new or unknown effects. The string is the raw `expressive_send_style_id` value.
+    /// Unmapped raw `expressive_send_style_id` value.
     Unknown(&'a str),
-    /// Message is not an expressive
+    /// Message has no expressive send style.
     None,
 }
 

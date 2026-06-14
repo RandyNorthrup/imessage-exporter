@@ -1,5 +1,5 @@
 /*!
- These are the link previews that iMessage generates when sending links.
+ Link previews iMessage generates when sending links.
 
  They may contain metadata, even if the page the link points to no longer exists on the internet.
 */
@@ -26,19 +26,19 @@ pub struct URLMessage<'a> {
     pub title: Option<&'a str>,
     /// The webpage's `<og:description>` attribute
     pub summary: Option<&'a str>,
-    /// The URL that ended up serving content, after all redirects
+    /// URL that served the preview content.
     pub url: Option<&'a str>,
-    /// The original url, before any redirects
+    /// Original URL before redirects.
     pub original_url: Option<&'a str>,
-    /// The type of webpage Apple thinks the link represents
+    /// Apple-provided item type.
     pub item_type: Option<&'a str>,
     /// Up to 4 image previews displayed in the background of the bubble
     pub images: Vec<&'a str>,
-    /// Icons that represent the website, generally the favicon or apple-touch-icon
+    /// Website icon URLs.
     pub icons: Vec<&'a str>,
-    /// The name of a website
+    /// Website name.
     pub site_name: Option<&'a str>,
-    /// Indicates whether this is a placeholder link preview that needs to be loaded
+    /// `true` when Messages stored the link as an unloaded placeholder preview.
     pub placeholder: bool,
 }
 
@@ -60,7 +60,7 @@ impl<'a> BalloonProvider<'a> for URLMessage<'a> {
 }
 
 impl<'a> URLMessage<'a> {
-    /// Gets the subtype of the URL message based on the payload
+    /// Parse the concrete URL-balloon subtype from the payload.
     pub fn get_url_message_override(
         payload: &'a Value,
     ) -> Result<URLOverride<'a>, PlistParseError> {
@@ -82,10 +82,9 @@ impl<'a> URLMessage<'a> {
         Err(PlistParseError::NoPayload)
     }
 
-    /// Extract the main dictionary of data from the body of the payload
+    /// Extract the main metadata dictionary from the payload.
     ///
-    /// There are two known ways this data is stored: the more recent `richLinkMetadata` style,
-    /// or some kind of social integration stored under a `metadata` key
+    /// Messages stores this data under either `richLinkMetadata` or `metadata`.
     fn get_body(payload: &'a Value) -> Result<&'a Value, PlistParseError> {
         let root_dict = payload.as_dictionary().ok_or_else(|| {
             PlistParseError::InvalidType("root".to_string(), "dictionary".to_string())

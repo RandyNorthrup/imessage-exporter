@@ -179,7 +179,7 @@ pub(crate) fn classify_message(
 #[cfg(test)]
 mod tests {
     use imessage_database::{
-        message_types::text_effects::TextEffect,
+        message_types::text_effects::text_effect::TextEffect,
         tables::messages::models::{AttachmentMeta, AttributedRange, BubbleComponent},
     };
 

@@ -4,6 +4,7 @@
 
 use crabstep::error::TypedStreamError;
 
+use crate::error::digital_touch::DigitalTouchError;
 use crate::error::handwriting::HandwritingError;
 use crate::error::streamtyped::StreamTypedError;
 use std::fmt::{Display, Formatter, Result};
@@ -33,10 +34,12 @@ pub enum PlistParseError {
     TypedStreamError(TypedStreamError),
     /// Error from handwriting data parsing
     HandwritingError(HandwritingError),
-    /// Error parsing Digital Touch message
-    DigitalTouchError,
+    /// Error from Digital Touch data parsing
+    DigitalTouchError(DigitalTouchError),
     /// Error parsing a poll message
     PollError,
+    /// Exceeded the maximum UID-reference resolution depth (likely a reference cycle)
+    RecursionLimit,
 }
 
 impl Display for PlistParseError {
@@ -66,13 +69,15 @@ impl Display for PlistParseError {
             }
             PlistParseError::StreamTypedError(why) => write!(fmt, "{why}"),
             PlistParseError::HandwritingError(why) => write!(fmt, "{why}"),
-            PlistParseError::DigitalTouchError => {
-                write!(fmt, "Unable to parse Digital Touch Message!")
-            }
+            PlistParseError::DigitalTouchError(why) => write!(fmt, "{why}"),
             PlistParseError::TypedStreamError(typed_stream_error) => {
                 write!(fmt, "TypedStream error: {typed_stream_error}")
             }
             PlistParseError::PollError => write!(fmt, "Unable to parse Poll Message!"),
+            PlistParseError::RecursionLimit => write!(
+                fmt,
+                "Exceeded maximum depth while resolving UID references; the archive may contain a reference cycle"
+            ),
         }
     }
 }
@@ -83,6 +88,7 @@ impl std::error::Error for PlistParseError {
             PlistParseError::StreamTypedError(e) => Some(e),
             PlistParseError::TypedStreamError(e) => Some(e),
             PlistParseError::HandwritingError(e) => Some(e),
+            PlistParseError::DigitalTouchError(e) => Some(e),
             _ => None,
         }
     }

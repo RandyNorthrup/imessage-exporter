@@ -1,5 +1,5 @@
 /*!
- These are the link previews that iMessage generates when sending Apple Music links.
+ Apple Music link previews stored in URL balloon payloads.
 */
 
 use plist::Value;
@@ -17,17 +17,17 @@ use crate::{
 /// `com.apple.messages.URLBalloonProvider` but from the Music app
 #[derive(Debug, PartialEq, Eq)]
 pub struct MusicMessage<'a> {
-    /// URL in Apple Music
+    /// Apple Music URL.
     pub url: Option<&'a str>,
-    /// URL pointing to the track preview stream
+    /// Track preview stream URL.
     pub preview: Option<&'a str>,
-    /// Artist name
+    /// Artist name.
     pub artist: Option<&'a str>,
-    /// Album name
+    /// Album name.
     pub album: Option<&'a str>,
-    /// Track name
+    /// Track name.
     pub track_name: Option<&'a str>,
-    /// Included lyrics, if any
+    /// Included lyric lines.
     pub lyrics: Option<Vec<&'a str>>,
 }
 
@@ -35,7 +35,7 @@ impl<'a> BalloonProvider<'a> for MusicMessage<'a> {
     fn from_map(payload: &'a Value) -> Result<Self, PlistParseError> {
         if let Ok((body, music_metadata)) = rich_link_metadata_and_nested(payload, "specialization")
         {
-            // Ensure the message is a Music message
+            // Music payloads carry album metadata.
             if get_string_from_dict(music_metadata, "album").is_none() {
                 return Err(PlistParseError::WrongMessageType);
             }

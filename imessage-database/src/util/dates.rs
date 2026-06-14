@@ -1,5 +1,5 @@
 /*!
- Contains date parsing functions for iMessage dates.
+ Date conversion and formatting helpers for Messages timestamps.
 
  Most dates are stored as nanosecond-precision unix timestamps with an epoch of `1/1/2001 00:00:00` in UTC.
 */
@@ -15,16 +15,14 @@ const SECONDS_PER_HOUR: i64 = 60 * SECONDS_PER_MINUTE;
 const SECONDS_PER_DAY: i64 = 24 * SECONDS_PER_HOUR;
 const SECONDS_PER_YEAR: i64 = 365 * SECONDS_PER_DAY;
 
-/// Factor used to convert between nanosecond-precision timestamps and seconds
+/// Factor used to convert nanosecond-precision timestamps to seconds.
 ///
-/// The iMessage database stores timestamps as nanoseconds, so this factor is used
-/// to convert between the database format and standard Unix timestamps.
+/// Most Messages timestamps use nanoseconds, while older rows may store seconds.
 pub const TIMESTAMP_FACTOR: i64 = 1_000_000_000;
 
-/// Get the date offset for the iMessage Database
+/// Return the Unix timestamp offset for the Messages epoch.
 ///
-/// This offset is used to adjust the unix timestamps stored in the iMessage database
-/// with a non-standard epoch of `2001-01-01 00:00:00` in UTC.
+/// Messages stores dates relative to `2001-01-01 00:00:00` UTC.
 ///
 /// # Example
 ///
@@ -40,10 +38,9 @@ pub fn get_offset() -> i64 {
         .timestamp()
 }
 
-/// Create a `DateTime<Local>` from an arbitrary date and offset
+/// Convert a raw Messages timestamp into local time.
 ///
-/// This is used to create date data for anywhere dates are stored in the table, including
-/// `PLIST` payloads or [`typedstream`](crate::util::typedstream) data.
+/// `offset` is usually [`get_offset`].
 ///
 /// # Example
 ///
@@ -68,7 +65,7 @@ pub fn get_local_time(date_stamp: i64, offset: i64) -> Result<DateTime<Local>, M
     Ok(Local.from_utc_datetime(&utc_stamp))
 }
 
-/// Format a date from the iMessage table for reading
+/// Format a local timestamp for export output.
 ///
 /// # Example:
 ///
@@ -106,7 +103,7 @@ pub fn format(date: &DateTime<Local>) -> String {
     out
 }
 
-/// Generate a readable diff from two local timestamps.
+/// Format the elapsed time between two local timestamps.
 ///
 /// # Example:
 ///
@@ -120,10 +117,8 @@ pub fn format(date: &DateTime<Local>) -> String {
 /// ```
 #[must_use]
 pub fn readable_diff(start: &DateTime<Local>, end: &DateTime<Local>) -> Option<String> {
-    // Calculate diff
     let seconds = end.timestamp() - start.timestamp();
 
-    // Early escape for invalid date diff
     if seconds < 0 {
         return None;
     }
@@ -131,8 +126,7 @@ pub fn readable_diff(start: &DateTime<Local>, end: &DateTime<Local>) -> Option<S
     let (years, remaining_seconds) = years_and_remainder(start, end)
         .unwrap_or((seconds / SECONDS_PER_YEAR, seconds % SECONDS_PER_YEAR));
 
-    // 51 is the length of a diff string that has all components with 2 digits each.
-    // This represented a performance increase of ~20% over a string that starts empty and grows with each component.
+    // Enough room for each component when values are two digits.
     let mut out_s = String::with_capacity(51);
 
     let days = remaining_seconds / SECONDS_PER_DAY;
@@ -149,7 +143,7 @@ pub fn readable_diff(start: &DateTime<Local>, end: &DateTime<Local>) -> Option<S
     Some(out_s)
 }
 
-/// Calculate the number of whole years between two dates, and the remaining seconds after accounting for those years.
+/// Calculate whole years and the remaining seconds between two dates.
 fn years_and_remainder(start: &DateTime<Local>, end: &DateTime<Local>) -> Option<(i64, i64)> {
     let mut years = end.year() - start.year();
 

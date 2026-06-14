@@ -1,5 +1,5 @@
 /*!
- These are the link previews that iMessage generates when sending links to apps in the App Store.
+ App Store link previews stored in URL balloon payloads.
 */
 
 use plist::Value;
@@ -16,24 +16,24 @@ use crate::{
 /// `com.apple.messages.URLBalloonProvider` but for App Store apps
 #[derive(Debug, PartialEq, Eq)]
 pub struct AppStoreMessage<'a> {
-    /// The URL that ended up serving content, after all redirects
+    /// URL that served the preview content.
     pub url: Option<&'a str>,
-    /// The original url, before any redirects
+    /// Original URL before redirects.
     pub original_url: Option<&'a str>,
-    /// The full name of the app in the App Store
+    /// Full App Store app name.
     pub app_name: Option<&'a str>,
-    /// The short description of the app in the App Store
+    /// Short App Store description.
     pub description: Option<&'a str>,
-    /// The platform the app is compiled for
+    /// Target platform.
     pub platform: Option<&'a str>,
-    /// The app's genre
+    /// App Store genre.
     pub genre: Option<&'a str>,
 }
 
 impl<'a> BalloonProvider<'a> for AppStoreMessage<'a> {
     fn from_map(payload: &'a Value) -> Result<Self, PlistParseError> {
         if let Ok((body, app_metadata)) = rich_link_metadata_and_nested(payload, "specialization") {
-            // Ensure the message is not a Music message
+            // Music payloads share this nesting but carry album metadata.
             if get_string_from_dict(app_metadata, "album").is_some() {
                 return Err(PlistParseError::WrongMessageType);
             }

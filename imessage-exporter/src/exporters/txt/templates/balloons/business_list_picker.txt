@@ -1,0 +1,3 @@
+{% if let Some(summary) = summary.get() %}{{ summary }}
+{% endif %}{% for item in items %}- {{ item.title }}{% if let Some(subtitle) = item.subtitle.get() %} ({{ subtitle }}){% endif %}{% if item.selected %} ✓{% endif %}
+{% endfor %}

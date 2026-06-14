@@ -1,5 +1,5 @@
 /*!
- Contains logic for handling query filter configurations.
+ SQL filter state for message queries.
 */
 use std::collections::BTreeSet;
 
@@ -11,20 +11,21 @@ use crate::{
 };
 
 #[derive(Debug, Default, PartialEq, Eq)]
-/// Represents filter configurations for a SQL query.
+/// Filters applied to message count and stream queries.
 pub struct QueryContext {
-    /// The start date filter. Only messages sent on or after this date will be included.
+    /// Inclusive lower-bound timestamp for message dates.
     pub start: Option<i64>,
-    /// The end date filter. Only messages sent before this date will be included.
+    /// Inclusive upper-bound timestamp for message dates.
     pub end: Option<i64>,
-    /// Selected handle IDs
+    /// Handle row IDs included in the query.
     pub selected_handle_ids: Option<BTreeSet<i32>>,
-    /// Selected chat IDs
+    /// Chat row IDs included in the query.
     pub selected_chat_ids: Option<BTreeSet<i32>>,
 }
 
 impl QueryContext {
-    /// Populate a [`QueryContext`] with a start date
+    /// Set the inclusive lower-bound date from `YYYY-MM-DD`.
+    ///
     /// # Example:
     ///
     /// ```
@@ -40,7 +41,8 @@ impl QueryContext {
         Ok(())
     }
 
-    /// Populate a [`QueryContext`] with an end date
+    /// Set the inclusive upper-bound date from `YYYY-MM-DD`.
+    ///
     /// # Example:
     ///
     /// ```
@@ -56,7 +58,7 @@ impl QueryContext {
         Ok(())
     }
 
-    /// Populate a [`QueryContext`] with a list of handle IDs to select
+    /// Set the handle row IDs included in the query.
     ///
     /// # Example:
     ///
@@ -71,7 +73,7 @@ impl QueryContext {
         self.selected_handle_ids = (!selected_handle_ids.is_empty()).then_some(selected_handle_ids);
     }
 
-    /// Populate a [`QueryContext`] with a list of chat IDs to select
+    /// Set the chat row IDs included in the query.
     ///
     /// # Example:
     ///
@@ -86,7 +88,7 @@ impl QueryContext {
         self.selected_chat_ids = (!selected_chat_ids.is_empty()).then_some(selected_chat_ids);
     }
 
-    /// Ensure a date string is valid
+    /// Parse `YYYY-MM-DD` as a Messages timestamp.
     fn sanitize_date(date: &str) -> Option<i64> {
         if date.len() < 9 {
             return None;
@@ -118,7 +120,7 @@ impl QueryContext {
         Some(stamp - (get_offset() * TIMESTAMP_FACTOR))
     }
 
-    /// Determine if the current `QueryContext` has any filters present
+    /// `true` when any filter is set.
     ///
     /// # Example:
     ///

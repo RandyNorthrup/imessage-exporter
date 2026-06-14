@@ -1,5 +1,5 @@
 /*!
- Defines routines for converting video files.
+ Video attachment conversion.
 */
 
 use std::{
@@ -14,10 +14,10 @@ use crate::app::compatibility::{
     models::{Converter, HardwareEncoder, VideoConverter, VideoType},
 };
 
-/// Copy a video file, converting if possible
+/// Copy a video file, converting MOV/QuickTime files when possible.
 ///
 /// - Attachment `MOV` files convert to `MP4`
-/// - Fallback to the original format
+/// - Otherwise copy the original format.
 pub(crate) fn video_copy_convert(
     from: &Path,
     to: &mut PathBuf,
@@ -44,7 +44,7 @@ pub(crate) fn video_copy_convert(
     None
 }
 
-/// Build ffmpeg arguments for remuxing without re-encoding
+/// Build ffmpeg arguments for remuxing without re-encoding.
 fn build_remux_args<'a>(from: &'a Path, to: &'a Path) -> Vec<&'a OsStr> {
     vec![
         OsStr::new("-i"),
@@ -57,7 +57,7 @@ fn build_remux_args<'a>(from: &'a Path, to: &'a Path) -> Vec<&'a OsStr> {
     ]
 }
 
-// Build ffmpeg arguments for encoding with optional hardware acceleration
+// Build ffmpeg arguments for encoding with optional hardware acceleration.
 fn build_encode_args<'a>(
     from: &'a Path,
     to: &'a Path,
@@ -89,7 +89,7 @@ fn build_encode_args<'a>(
     args
 }
 
-// Convert a video file by attempting remuxing, falling back to hardware-accelerated or software re-encode
+// Convert by remuxing first, then re-encoding when the remux fails.
 fn convert_mov(
     from: &Path,
     to: &Path,

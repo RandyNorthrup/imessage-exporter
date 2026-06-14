@@ -5,10 +5,8 @@ mod tests {
 
     #[test]
     fn can_get_time_date_read_after_date() {
-        // Get offset
         let offset = get_offset();
 
-        // Create message
         let mut message = Message::blank();
         // May 17, 2022  8:29:42 PM
         message.date = 674526582885055488;
@@ -25,10 +23,8 @@ mod tests {
 
     #[test]
     fn can_get_time_date_read_before_date() {
-        // Get offset
         let offset = get_offset();
 
-        // Create message
         let mut message = Message::blank();
         // May 17, 2022  9:30:31 PM
         message.date = 674530231992568192;

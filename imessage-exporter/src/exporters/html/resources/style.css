@@ -29,6 +29,22 @@ svg {
     height: auto;
 }
 
+.message .digital_touch_bubble {
+    width: 30vw;
+}
+
+.digital_touch svg {
+    width: 100%;
+}
+
+.digital_touch video {
+    width: 100%;
+    display: block;
+    aspect-ratio: 768 / 960;
+    object-fit: cover;
+    background: black;
+}
+
 a[href^="#"] {
     text-decoration: none;
     color: darkblue;
@@ -395,6 +411,67 @@ td {
     margin-right: 5px;
 }
 
+.business-balloon {
+    color: black;
+    padding: var(--message-padding);
+}
+
+.business-heading {
+    font-weight: 600;
+}
+
+.business-options {
+    list-style: none;
+    margin: var(--message-padding) 0 0;
+    padding-left: 0;
+}
+
+.business-option {
+    border: var(--border-width) solid var(--imessage-blue);
+    border-radius: 12px;
+    color: var(--imessage-blue);
+    margin-top: 8px;
+    padding: 10px var(--message-padding);
+    text-align: center;
+}
+
+.business-option:first-child {
+    margin-top: 0;
+}
+
+.business-option.selected {
+    background: var(--imessage-blue);
+    color: white;
+}
+
+.business-option.selected::after {
+    content: " ✓";
+}
+
+.business-option-detail {
+    opacity: var(--opacity-high);
+}
+
+.business-answers {
+    margin-top: 8px;
+}
+
+.business-question {
+    font-weight: 600;
+}
+
+.business-question:not(:first-of-type) {
+    margin-top: 8px;
+}
+
+.business-answer {
+    margin-top: 2px;
+}
+
+.business-subtitle {
+    margin-top: 4px;
+    opacity: var(--opacity-high);
+}
 
 @media (prefers-color-scheme: dark) {
     :root {

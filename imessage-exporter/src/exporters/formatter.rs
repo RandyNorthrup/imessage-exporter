@@ -4,14 +4,23 @@ use imessage_database::{
     message_types::{
         app::AppMessage,
         app_store::AppStoreMessage,
+        business_chat::BusinessMessage,
         collaboration::CollaborationMessage,
-        digital_touch::DigitalTouch,
+        digital_touch::DigitalTouchMessage,
         edited::EditedMessage,
         handwriting::HandwrittenMessage,
         music::MusicMessage,
         placemark::PlacemarkMessage,
         polls::Poll,
-        text_effects::{Animation, Style, TextEffect, Unit},
+        text_effects::{
+            animation::Animation,
+            detected::{
+                address::DetectedAddress, currency::DetectedCurrency, flight::Flight,
+                shipment_tracking::ShipmentTracking, unit::Unit,
+            },
+            style::Style,
+            text_effect::TextEffect,
+        },
         url::URLMessage,
     },
     tables::{
@@ -25,7 +34,7 @@ use imessage_database::{
 
 use crate::{
     app::{error::RuntimeError, runtime::Config},
-    exporters::shared::part::AttachmentResolver,
+    exporters::shared::{balloon::rewrite_fitness_receiver, part::AttachmentResolver},
 };
 
 /// Where a message sits in the rendered conversation hierarchy. Each exporter
@@ -58,7 +67,7 @@ pub(crate) enum AttachmentRender {
 }
 
 // MARK: Message
-/// Defines behavior for formatting message instances to the desired output format
+/// Formatting hooks used by each exporter to render a message.
 pub(crate) trait MessageFormatter<'a> {
     /// Format an attachment, possibly by reading the disk. The returned
     /// [`AttachmentRender`] tells the caller which body hook to invoke.
@@ -68,23 +77,23 @@ pub(crate) trait MessageFormatter<'a> {
         msg: &'a Message,
         metadata: &AttachmentMeta,
     ) -> AttachmentRender;
-    /// Format a sticker, possibly by reading the disk
+    /// Format a sticker, possibly by reading the disk.
     fn format_sticker(&self, attachment: &'a mut Attachment, msg: &'a Message) -> String;
-    /// Format an app message by parsing some of its fields
+    /// Format an app message from its payload and attachments.
     fn format_app(
         &self,
         msg: &'a Message,
         attachments: &mut Vec<Attachment>,
     ) -> Result<String, RuntimeError>;
-    /// Format a tapback (displayed under a message)
+    /// Format a tapback displayed under a message.
     fn format_tapback(&self, msg: &Message) -> Result<String, RuntimeError>;
     /// Render an announcement message directly into `out`. Permits reuse of
     /// the same buffer that [`format_message_into`](Self::format_message_into)
     /// uses, so the per-message hot path doesn't allocate per call.
     fn format_announcement(&self, msg: &Message, out: &mut String);
-    /// Format a `SharePlay` message
+    /// Format a `SharePlay` message.
     fn format_shareplay(&self) -> &'static str;
-    /// Format a legacy Shared Location message
+    /// Format a legacy shared-location message.
     fn format_shared_location(&self, kind: SharedLocation) -> &'static str;
     /// Format an edited message by applying the edit's
     /// [`AttributedRange`]s to the original message text
@@ -128,35 +137,37 @@ pub(crate) trait MessageFormatter<'a> {
 }
 
 // MARK: Balloon
-/// Defines behavior for formatting custom balloons to the desired output format
+/// Formatting hooks for custom app balloons.
 pub(crate) trait BalloonFormatter {
-    /// Format a URL message
+    /// Format a URL message.
     fn format_url(&self, msg: &Message, balloon: &URLMessage) -> String;
-    /// Format an Apple Music message
+    /// Format an Apple Music message.
     fn format_music(&self, balloon: &MusicMessage) -> String;
-    /// Format a Rich Collaboration message
+    /// Format a Rich Collaboration message.
     fn format_collaboration(&self, balloon: &CollaborationMessage) -> String;
-    /// Format an App Store link
+    /// Format an App Store link.
     fn format_app_store(&self, balloon: &AppStoreMessage) -> String;
-    /// Format a shared location message
+    /// Format a shared location message.
     fn format_placemark(&self, balloon: &PlacemarkMessage) -> String;
-    /// Format a handwritten note message
+    /// Format a handwritten note message.
     fn format_handwriting(&self, msg: &Message, balloon: &HandwrittenMessage) -> String;
-    /// Format a digital touch message
-    fn format_digital_touch(&self, msg: &Message, balloon: &DigitalTouch) -> String;
-    /// Format an Apple Pay message
+    /// Format a digital touch message.
+    fn format_digital_touch(&self, msg: &Message, balloon: &DigitalTouchMessage) -> String;
+    /// Format an Apple Pay message.
     fn format_apple_pay(&self, balloon: &AppMessage) -> String;
-    /// Format a Fitness message
+    /// Format a Fitness message.
     fn format_fitness(&self, balloon: &AppMessage) -> String;
-    /// Format a Photo Slideshow message
+    /// Format a Photo Slideshow message.
     fn format_slideshow(&self, balloon: &AppMessage) -> String;
-    /// Format a Find My message
+    /// Format a Find My message.
     fn format_find_my(&self, balloon: &AppMessage) -> String;
-    /// Format a Check In message
+    /// Format a Check In message.
     fn format_check_in(&self, balloon: &AppMessage) -> String;
-    /// Format a Poll message
+    /// Format a poll message.
     fn format_poll(&self, poll: &Poll) -> String;
-    /// Format a generic app message, generally third party
+    /// Format an Apple Business Chat message.
+    fn format_business(&self, balloon: &BusinessMessage) -> String;
+    /// Format an app message without a specialized renderer.
     fn format_generic_app(
         &self,
         balloon: &AppMessage,
@@ -186,6 +197,15 @@ pub(crate) trait PartBodyBuilder {
     fn body_text_bubble(&self, content: String) -> Self::Body;
     /// Translated text content
     fn body_text_translated(&self, translated: String, original: String) -> Self::Body;
+    /// Render `original` as a text bubble, pairing it with the message's
+    /// translation when one applies.
+    fn body_text_with_translation(&self, message: &Message, original: String) -> Self::Body {
+        if let Ok(Some(translation)) = self.config().translation_for(message) {
+            let safe_translated = self.body_escape(&translation.translated_text);
+            return self.body_text_translated(safe_translated, original);
+        }
+        self.body_text_bubble(rewrite_fitness_receiver(original))
+    }
     /// Edited text content
     fn body_text_edited(&self, content: String) -> Self::Body;
     /// Attachment content, generally by reference to an external file
@@ -214,20 +234,28 @@ pub(crate) trait PartBodyBuilder {
 }
 
 // MARK: Text Effects
-/// Defines behavior for applying a [`TextEffect`] to the desired output format
+/// Formatting hooks for text effects.
 pub(crate) trait TextEffectFormatter<'a> {
-    /// Format a specific [`TextEffect`]
+    /// Format one [`TextEffect`].
     fn format_effect(&'a self, text: &'a str, effect: &'a TextEffect) -> Cow<'a, str>;
-    /// Format message text containing a [`Mention`](imessage_database::message_types::text_effects::TextEffect::Mention)
+    /// Format a mention range.
     fn format_mention(&self, text: &str, mentioned: &str) -> String;
-    /// Format message text containing a [`Link`](imessage_database::message_types::text_effects::TextEffect::Link)
+    /// Format a link range.
     fn format_link(&self, text: &str, url: &str) -> String;
-    /// Format message text containing an [`OTP`](imessage_database::message_types::text_effects::TextEffect::OTP)
+    /// Format a one-time-password range.
     fn format_otp(&self, text: &str) -> String;
-    /// Format message text containing a [`Conversion`](imessage_database::message_types::text_effects::TextEffect::Conversion)
+    /// Format a detected postal address range.
+    fn format_address(&self, text: &str, address: &DetectedAddress) -> String;
+    /// Format a detected unit-conversion range.
     fn format_conversion(&self, text: &str, unit: &Unit) -> String;
-    /// Format message text containing some [`Styles`](imessage_database::message_types::text_effects::TextEffect::Styles)
+    /// Format a detected monetary amount range.
+    fn format_currency(&self, text: &str, currency: &DetectedCurrency) -> String;
+    /// Format a detected package tracking range.
+    fn format_tracking(&self, text: &str, tracking: &ShipmentTracking) -> String;
+    /// Format a detected flight reference range.
+    fn format_flight(&self, text: &str, flight: &Flight) -> String;
+    /// Format a styled text range.
     fn format_styles(&self, text: &str, styles: &[Style]) -> String;
-    /// Format [`Animated`](imessage_database::message_types::text_effects::TextEffect::Animated) message text
+    /// Format an animated text range.
     fn format_animated(&self, text: &str, animation: &Animation) -> String;
 }

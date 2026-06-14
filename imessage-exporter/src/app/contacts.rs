@@ -9,30 +9,30 @@ use imessage_database::{
 };
 use rusqlite::{Connection, Result};
 
-/// The default contacts file location from the root of an iOS backup
+/// Default contacts database path inside an iOS backup.
 pub const DEFAULT_PATH_IOS: &str = "31/31bb7ba8914766d4ba40d6dfb6113c8b614be442";
 
-/// Minimum number of digits required to consider a string a valid phone number
+/// Minimum digits required to index a phone number.
 const MIN_PHONE_DIGITS: usize = 7;
 
 // MARK: Name
 #[derive(Clone, Debug, PartialEq, Eq)]
-/// Simple first/last name struct
+/// Contact name and the handle IDs it resolved from.
 pub struct Name {
-    /// First name
+    /// First name.
     pub first: String,
-    /// Last name
+    /// Last name.
     pub last: String,
-    /// Full name as a single string
+    /// Full name.
     pub full: String,
-    /// Combined handle details from iMessage's database
+    /// Combined handle details from the Messages database.
     pub details: String,
-    /// Set of original handle IDs that map to this name
+    /// Original handle IDs that map to this name.
     pub handle_ids: HashSet<i32>,
 }
 
 impl Name {
-    /// Create from optional first/last name
+    /// Build a name from optional first and last name fields.
     fn from_opt(first: Option<String>, last: Option<String>) -> Option<Self> {
         // Return None if both are None
         if first.is_none() && last.is_none() {
@@ -60,12 +60,12 @@ impl Name {
         })
     }
 
-    /// Simple scoring: 1 point for first name, 1 point for last name
+    /// Score name completeness: one point each for first and last name.
     fn score(&self) -> u8 {
         u8::from(!self.first.is_empty()) + u8::from(!self.last.is_empty())
     }
 
-    /// Check if the name matches the provided string in any field
+    /// `true` when any display field contains the provided string.
     pub fn contains(&self, s: &str) -> bool {
         self.first.contains(s)
             || self.last.contains(s)
@@ -73,7 +73,7 @@ impl Name {
             || self.details.contains(s)
     }
 
-    /// Get the contact's full name, falling back to details if full name is empty
+    /// Return the full name, falling back to handle details.
     pub fn get_display_name(&self) -> &str {
         if self.full.is_empty() {
             &self.details
@@ -82,7 +82,7 @@ impl Name {
         }
     }
 
-    /// Create a Name that only carries the details string
+    /// Build a name that only carries the details string.
     pub fn from_details<D: Into<String>>(details: D) -> Self {
         Name {
             first: String::new(),
@@ -96,7 +96,7 @@ impl Name {
 
 #[cfg(test)]
 impl Name {
-    /// Create a fake Name for testing
+    /// Build a fake name for tests.
     pub fn fake_name(name: &str) -> Name {
         Name {
             first: String::new(),
@@ -110,14 +110,14 @@ impl Name {
 
 // MARK: Index
 #[derive(Debug, Default)]
-/// Contacts index for looking up names by phone/email
+/// Contacts index keyed by normalized phone number or email address.
 pub struct ContactsIndex {
-    /// Map of identifier (phone/email) to [`Name`]
+    /// Names keyed by normalized identifier.
     index: HashMap<String, Name>,
 }
 
 impl ContactsIndex {
-    /// Build a contacts index
+    /// Build a contacts index from one database path or all local macOS sources.
     ///
     /// - If `path` is `Some`, we only look at that database.
     /// - If `path` is `None`, scans macOS Contacts sources under
@@ -149,7 +149,7 @@ impl ContactsIndex {
     }
 
     // MARK: macOS
-    /// Build contacts index from macOS Contacts database
+    /// Build a contacts index from a macOS Contacts database.
     fn build_from_macos(conn: &Connection) -> Result<Self> {
         let mut index = HashMap::new();
 
@@ -187,7 +187,7 @@ impl ContactsIndex {
     }
 
     // MARK: iOS
-    /// Build contacts index from iOS backup database
+    /// Build a contacts index from an iOS backup Contacts database.
     fn build_from_ios(conn: &Connection) -> Result<Self> {
         // iOS backup contacts: ABPersonFullTextSearch_content with columns:
         // c0First (TEXT), c1Last (TEXT), c16Phone (TEXT: space-separated variants), c17Email (TEXT: space-separated)
@@ -226,7 +226,7 @@ impl ContactsIndex {
         Ok(Self { index })
     }
 
-    /// Returns first/last name if found
+    /// Look up a contact name by handle string.
     pub fn lookup(&self, id: &str) -> Option<Name> {
         // Look up each space-separated token
         for id_part in id.split_whitespace() {
@@ -248,7 +248,7 @@ impl ContactsIndex {
         None
     }
 
-    /// Build a map of participant handle IDs to Names
+    /// Build names keyed by deduplicated participant ID.
     ///
     /// - `participants`: map of handle ID to handle details
     /// - `deduped_handles`: map of handle ID to deduplicated handle ID
@@ -286,7 +286,7 @@ impl ContactsIndex {
     }
 }
 
-/// Check if a table or view exists in the database
+/// Return whether a table or view exists in the database.
 fn table_exists(conn: &Connection, name: &str) -> bool {
     conn.query_row(
         "SELECT 1 FROM sqlite_master WHERE type IN ('table','view') AND name = ?1 LIMIT 1",
@@ -296,7 +296,7 @@ fn table_exists(conn: &Connection, name: &str) -> bool {
     .is_ok()
 }
 
-/// Upsert a [`Name`] into the map if it has a better [`Name::score`] than existing
+/// Insert a name when it is more complete than the existing value.
 fn upsert_best(map: &mut HashMap<String, Name>, key: String, incoming: &Name) {
     match map.get_mut(&key) {
         Some(existing) => {
@@ -311,18 +311,17 @@ fn upsert_best(map: &mut HashMap<String, Name>, key: String, incoming: &Name) {
 }
 
 // MARK: Email
-/// Simple heuristic to determine if the identifier looks like an email
+/// `true` when the identifier looks like an email address.
 fn looks_like_email(s: &str) -> bool {
     s.contains('@')
 }
 
-/// Normalize email: trim, lowercase, remove angle-brackets
+/// Normalize an email by trimming, lowercasing, and removing angle brackets.
 fn normalize_email(s: &str) -> Option<String> {
     let s = s.trim();
     if s.is_empty() {
         return None;
     }
-    // Guard for angle-brackets
     let s = s.trim_start_matches('<').trim_end_matches('>');
     if s.is_empty() {
         return None;
@@ -330,9 +329,8 @@ fn normalize_email(s: &str) -> Option<String> {
     Some(s.to_lowercase())
 }
 
-/// Parse a space-separated list of emails
+/// Parse a space-separated email list.
 fn parse_email_list(raw: &str) -> Vec<String> {
-    // macOS may store a single value; guard for angle-brackets
     if raw.contains(' ') {
         raw.split_whitespace().filter_map(normalize_email).collect()
     } else {
@@ -341,7 +339,7 @@ fn parse_email_list(raw: &str) -> Vec<String> {
 }
 
 // MARK: Phone
-/// Generate possible phone number keys from a raw phone number
+/// Build lookup keys from a raw phone number.
 ///
 /// - If the number contains "urn:", returns an empty vector
 /// - If the number has fewer than [`MIN_PHONE_DIGITS`] digits, returns an empty vector
@@ -362,10 +360,9 @@ fn phone_keys(raw: &str) -> Vec<String> {
         return vec![];
     }
 
-    // Create keys with and without '+' prefix for country code
     let mut keys = vec![digits.clone(), format!("+{digits}")];
 
-    // If the original was 12 chars starting with +1, add a variant without the `+1` (USA) country code
+    // US numbers may appear with or without the country code.
     if digits.len() == 11 && raw.starts_with("+1") {
         let last_10 = &digits[digits.len() - 10..];
         keys.push(last_10.to_string());
@@ -376,7 +373,7 @@ fn phone_keys(raw: &str) -> Vec<String> {
     keys
 }
 
-/// Extract digits from a raw phone number string
+/// Extract digits from a raw phone number string.
 fn to_phone_digits(raw: &str) -> String {
     let mut out = String::with_capacity(raw.len());
     for ch in raw.chars() {

@@ -11,7 +11,7 @@ This tool targets the current latest public release for Messages.app. It may wor
 - Local macOS messages
 - Encrypted or unencrypted local iOS backups
   - Unencrypted backups are resolved normally
-  - Encrypted backups are resolved with [crabapple](https://github.com/ReagentX/crabapple)
+  - Encrypted backups are resolved with [`crabapple`](https://github.com/ReagentX/crabapple)
   - Phone and FaceTime call history can be exported when Apple's call-history database is present in the backup
 - Jailbroken iOS filesystem data
   - Uses `sms.db`, which follows the same schema as macOS `chat.db`
@@ -52,8 +52,13 @@ This tool targets the current latest public release for Messages.app. It may wor
     - [Mentions](https://support.apple.com/guide/messages/mention-a-person-icht306ee34b/mac)
     - Hyperlinks
     - OTP/2FA
-    - Unit Conversions
     - [Animations and Styles](https://support.apple.com/guide/iphone/style-and-animate-messages-iphe5c5af4d4/ios)
+    - Data detectors, parsed from `DDScannerResult` payloads:
+      - Unit and timezone conversions
+      - Currency amounts (symbol and amount)
+      - Postal addresses (street, city, state, postal code, and country)
+      - Package tracking (carrier and tracking number)
+      - Flights (airline and flight number)
 - Edited and Unsent messages
   - Detects if messages components were edited or unsent
     - [Edited messages](https://support.apple.com/guide/iphone/unsend-and-edit-messages-iphe67195653/ios)
@@ -108,6 +113,7 @@ This tool targets the current latest public release for Messages.app. It may wor
   - Sticker effects are annotated in all exports
   - Sticker tapbacks are also supported
   - Genmoji are displayed with their prompt descriptions
+  - Inline stickers (Memoji, Genmoji, and custom stickers placed within the message text) render inline in HTML exports, scaled like jumbo emoji (larger when only a few are present)
 - Apple Pay
   - Displays Apple Pay transaction (source, amount, type) messages
 - URL previews
@@ -129,6 +135,10 @@ This tool targets the current latest public release for Messages.app. It may wor
     - Check In messages
     - Find My messages
     - Polls and Votes
+    - Business Chat messages
+      - Quick Replies
+      - Interactive Forms
+      - List Pickers
 - Handwritten Messages
   - Parses the protobuf payload to extract [handwritten](https://support.apple.com/en-my/guide/iphone/iph3d4cb79c9/ios) message data
     - Displayed as embedded `svg` in HTML exports
@@ -137,7 +147,17 @@ This tool targets the current latest public release for Messages.app. It may wor
       - `clone, basic, full`: saved as an `svg` file
 - Digital Touch
   - Parses the protobuf payload to extract [Digital Touch](https://support.apple.com/guide/ipod-touch/send-a-digital-touch-effect-iph3fadba219/ios) message data
-    - Displayed as text that describes the type of message sent in HTML and TXT exports
+    - Supports all Digital Touch effects:
+      - Taps
+      - Sketches
+      - Kisses
+      - Heartbeats, including heartbreaks
+      - Fireballs
+      - Photos and videos
+    - HTML exports render a static frame depicting the captured data as an embedded `svg` on a black `4:5` canvas
+      - A photo is shown as the canvas backdrop, with any sketch drawn over it
+      - A video is shown as an embedded video player
+    - TXT exports describe each effect on a single line, including stroke and point counts or beats per minute
 - Duplicated group chats
   - Handles (participants) and chats (threads) can become duplicated
   - On startup:

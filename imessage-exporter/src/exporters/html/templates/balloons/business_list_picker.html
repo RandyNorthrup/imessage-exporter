@@ -1,0 +1,6 @@
+<div class="business-balloon">{% if let Some(summary) = summary.get() %}<div class="business-heading">{{ summary }}
+    </div>{% endif %}<ul class="business-options">{% for item in items %}<li
+            class="business-option{% if item.selected %} selected{% endif %}">{{ item.title }}{% if let Some(subtitle) =
+            item.subtitle.get() %} <span class="business-option-detail">{{ subtitle }}</span>{% endif %}</li>{% endfor
+        %}</ul>
+</div>

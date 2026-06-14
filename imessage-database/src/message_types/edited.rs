@@ -1,7 +1,5 @@
 /*!
- Logic and containers for the `message_summary_info` of an edited or unsent iMessage.
-
- The main data type used to represent these types of messages is [`EditedMessage`].
+ Edited and unsent message metadata from `message_summary_info`.
 */
 use crabstep::TypedStreamDeserializer;
 use plist::Value;
@@ -19,28 +17,28 @@ use crate::{
     },
 };
 
-/// The type of edit performed to a message body part
+/// Edit state for one message body part.
 #[derive(Debug, PartialEq, Eq)]
 pub enum EditStatus {
-    /// The content of the message body part was altered
+    /// Body part was edited.
     Edited,
-    /// The content of the message body part was unsent
+    /// Body part was unsent.
     Unsent,
-    /// The content of the message body part was not changed
+    /// Body part was not changed.
     Original,
 }
 
-/// Represents a single edit event for a message part
+/// One edit-history entry for a message part.
 #[derive(Debug, PartialEq)]
 pub struct EditedEvent {
-    /// The date the message part was edited
+    /// Edit timestamp in Apple's nanosecond epoch.
     pub date: i64,
     /// The content of the edited message part, deserialized from the
     /// [`typedstream`](crate::util::typedstream) format.
     pub text: String,
-    /// The parsed [`typedstream`](crate::util::typedstream) component data used to add attributes to the message text
+    /// Parsed body components for the edited text.
     pub components: Vec<BubbleComponent>,
-    /// A GUID reference to another message
+    /// GUID reference to another message, when present.
     pub guid: Option<String>,
 }
 
@@ -60,12 +58,12 @@ impl EditedEvent {
     }
 }
 
-/// Tracks the edit status and history for a specific part of a message
+/// Edit state and history for one message body part.
 #[derive(Debug, PartialEq)]
 pub struct EditedMessagePart {
-    /// The type of edit made to the given message part
+    /// Current edit state for this part.
     pub status: EditStatus,
-    /// Contains edits made to the given message part, if any
+    /// Historical edit entries for this part.
     pub edit_history: Vec<EditedEvent>,
 }
 
@@ -78,13 +76,7 @@ impl Default for EditedMessagePart {
     }
 }
 
-/// Main edited message container
-///
-/// # Background
-///
-/// iMessage permits editing sent messages up to five times
-/// within 15 minutes of sending the first message and unsending
-/// sent messages within 2 minutes.
+/// Parsed edit metadata for every body part in a message.
 ///
 /// # Internal Representation
 ///
@@ -92,24 +84,23 @@ impl Default for EditedMessagePart {
 /// Edited messages include `message_summary_info` that contains a dictionary
 /// with message body part data, including [`typedstream`](crate::util::typedstream)-encoded
 /// edit history. The order of entries in the edit history represents the order
-/// the messages were edited in, i.e. item `0` was the original and the last
-/// item is the current message.
+/// the part changed: item `0` is the original text and the last item is the
+/// current text.
 ///
 /// ## Message Body Parts
 ///
-/// - The `otr` key contains a dictionary of message body part indexes with some associated metadata.
-/// - The `rp` key contains a list of unsent message parts
-/// - The `ec` key contains a dictionary of edited message part indexes mapping to the history of edits
-///   - For each dictionary item in this array, The `d` key represents the
-///     time the message was edited and the `t` key represents the message's
-///     `attributedBody` text in the [`typedstream`](crate::util::typedstream) format.
+/// - `otr`: dictionary of message part indexes.
+/// - `rp`: list of unsent message part indexes.
+/// - `ec`: dictionary of edited message part indexes to edit history arrays.
+/// - Each `ec` item stores `d` (edit timestamp) and `t` (edited
+///   `attributedBody` typedstream).
 ///
 /// # Documentation
 ///
 /// Apple describes editing and unsending messages [here](https://support.apple.com/guide/iphone/unsend-and-edit-messages-iphe67195653/ios).
 #[derive(Debug, PartialEq)]
 pub struct EditedMessage {
-    /// Contains data representing each part of an edited message
+    /// One entry per message body part.
     pub parts: Vec<EditedMessagePart>,
 }
 
@@ -139,12 +130,18 @@ impl<'a> BalloonProvider<'a> for EditedMessage {
                     )
                 })?;
 
-                for event in events {
+                for (event_idx, event) in events.iter().enumerate() {
                     let message_data = event.as_dictionary().ok_or_else(|| {
-                        PlistParseError::InvalidTypeIndex(idx, "dictionary".to_string())
+                        PlistParseError::InvalidTypeIndex(event_idx, "dictionary".to_string())
                     })?;
 
-                    let timestamp = extract_int_key(message_data, "d")? * TIMESTAMP_FACTOR;
+                    let timestamp = extract_int_key(message_data, "d")?
+                        .checked_mul(TIMESTAMP_FACTOR)
+                        .ok_or_else(|| {
+                            PlistParseError::InvalidEditedMessage(
+                                "edit timestamp out of range".to_string(),
+                            )
+                        })?;
 
                     let data = extract_bytes_key(message_data, "t")?;
 
@@ -197,20 +194,20 @@ impl<'a> BalloonProvider<'a> for EditedMessage {
 }
 
 impl EditedMessage {
-    /// A new message with a preallocated capacity
+    /// Build an empty edit record with capacity for known body parts.
     fn with_capacity(capacity: usize) -> Self {
         EditedMessage {
             parts: Vec::with_capacity(capacity),
         }
     }
 
-    /// Gets the edited message data for the given message part index
+    /// Return edit metadata for the given body part index.
     #[must_use]
     pub fn part(&self, index: usize) -> Option<&EditedMessagePart> {
         self.parts.get(index)
     }
 
-    /// Indicates if the given message part has been edited
+    /// `true` when the given body part exists and has not been edited or unsent.
     #[must_use]
     pub fn is_unedited_at(&self, index: usize) -> bool {
         match self.parts.get(index) {
@@ -219,7 +216,7 @@ impl EditedMessage {
         }
     }
 
-    /// Gets the number of parts that may or may not have been edited or unsent
+    /// Number of body parts tracked by this edit payload.
     #[must_use]
     pub fn items(&self) -> usize {
         self.parts.len()
@@ -229,7 +226,7 @@ impl EditedMessage {
 #[cfg(test)]
 mod test_parser {
     use crate::message_types::edited::{EditStatus, EditedEvent, EditedMessagePart};
-    use crate::message_types::text_effects::{Style, TextEffect};
+    use crate::message_types::text_effects::{style::Style, text_effect::TextEffect};
     use crate::message_types::{edited::EditedMessage, variants::BalloonProvider};
     use crate::tables::messages::models::{AttributedRange, BubbleComponent};
 
@@ -611,7 +608,7 @@ mod test_gen {
     use std::env::current_dir;
     use std::fs::File;
 
-    use crate::message_types::text_effects::{Style, TextEffect};
+    use crate::message_types::text_effects::{style::Style, text_effect::TextEffect};
     use crate::message_types::{edited::EditedMessage, variants::BalloonProvider};
     use crate::tables::messages::models::{AttributedRange, BubbleComponent};
 

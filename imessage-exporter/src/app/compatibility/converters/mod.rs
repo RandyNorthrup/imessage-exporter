@@ -1,5 +1,5 @@
 /*!
- Contains logic that describes how different attachments are converted.
+ Attachment conversion implementations.
 */
 
 pub mod audio;

@@ -1008,6 +1008,146 @@ impl ::protobuf::reflect::ProtobufValue for FireballMessage {
     type RuntimeType = ::protobuf::reflect::rt::RuntimeTypeMessage<Self>;
 }
 
+// @@protoc_insertion_point(message:digital_touch.MediaMessage)
+#[derive(PartialEq,Clone,Default,Debug)]
+pub struct MediaMessage {
+    // message fields
+    // @@protoc_insertion_point(field:digital_touch.MediaMessage.Archive)
+    pub Archive: ::std::vec::Vec<u8>,
+    // @@protoc_insertion_point(field:digital_touch.MediaMessage.MediaType)
+    pub MediaType: u64,
+    // special fields
+    // @@protoc_insertion_point(special_field:digital_touch.MediaMessage.special_fields)
+    pub special_fields: ::protobuf::SpecialFields,
+}
+
+impl<'a> ::std::default::Default for &'a MediaMessage {
+    fn default() -> &'a MediaMessage {
+        <MediaMessage as ::protobuf::Message>::default_instance()
+    }
+}
+
+impl MediaMessage {
+    pub fn new() -> MediaMessage {
+        ::std::default::Default::default()
+    }
+
+    fn generated_message_descriptor_data() -> ::protobuf::reflect::GeneratedMessageDescriptorData {
+        let mut fields = ::std::vec::Vec::with_capacity(2);
+        let mut oneofs = ::std::vec::Vec::with_capacity(0);
+        fields.push(::protobuf::reflect::rt::v2::make_simpler_field_accessor::<_, _>(
+            "Archive",
+            |m: &MediaMessage| { &m.Archive },
+            |m: &mut MediaMessage| { &mut m.Archive },
+        ));
+        fields.push(::protobuf::reflect::rt::v2::make_simpler_field_accessor::<_, _>(
+            "MediaType",
+            |m: &MediaMessage| { &m.MediaType },
+            |m: &mut MediaMessage| { &mut m.MediaType },
+        ));
+        ::protobuf::reflect::GeneratedMessageDescriptorData::new_2::<MediaMessage>(
+            "MediaMessage",
+            fields,
+            oneofs,
+        )
+    }
+}
+
+impl ::protobuf::Message for MediaMessage {
+    const NAME: &'static str = "MediaMessage";
+
+    fn is_initialized(&self) -> bool {
+        true
+    }
+
+    fn merge_from(&mut self, is: &mut ::protobuf::CodedInputStream<'_>) -> ::protobuf::Result<()> {
+        while let Some(tag) = is.read_raw_tag_or_eof()? {
+            match tag {
+                18 => {
+                    self.Archive = is.read_bytes()?;
+                },
+                32 => {
+                    self.MediaType = is.read_uint64()?;
+                },
+                tag => {
+                    ::protobuf::rt::read_unknown_or_skip_group(tag, is, self.special_fields.mut_unknown_fields())?;
+                },
+            };
+        }
+        ::std::result::Result::Ok(())
+    }
+
+    // Compute sizes of nested messages
+    #[allow(unused_variables)]
+    fn compute_size(&self) -> u64 {
+        let mut my_size = 0;
+        if !self.Archive.is_empty() {
+            my_size += ::protobuf::rt::bytes_size(2, &self.Archive);
+        }
+        if self.MediaType != 0 {
+            my_size += ::protobuf::rt::uint64_size(4, self.MediaType);
+        }
+        my_size += ::protobuf::rt::unknown_fields_size(self.special_fields.unknown_fields());
+        self.special_fields.cached_size().set(my_size as u32);
+        my_size
+    }
+
+    fn write_to_with_cached_sizes(&self, os: &mut ::protobuf::CodedOutputStream<'_>) -> ::protobuf::Result<()> {
+        if !self.Archive.is_empty() {
+            os.write_bytes(2, &self.Archive)?;
+        }
+        if self.MediaType != 0 {
+            os.write_uint64(4, self.MediaType)?;
+        }
+        os.write_unknown_fields(self.special_fields.unknown_fields())?;
+        ::std::result::Result::Ok(())
+    }
+
+    fn special_fields(&self) -> &::protobuf::SpecialFields {
+        &self.special_fields
+    }
+
+    fn mut_special_fields(&mut self) -> &mut ::protobuf::SpecialFields {
+        &mut self.special_fields
+    }
+
+    fn new() -> MediaMessage {
+        MediaMessage::new()
+    }
+
+    fn clear(&mut self) {
+        self.Archive.clear();
+        self.MediaType = 0;
+        self.special_fields.clear();
+    }
+
+    fn default_instance() -> &'static MediaMessage {
+        static instance: MediaMessage = MediaMessage {
+            Archive: ::std::vec::Vec::new(),
+            MediaType: 0,
+            special_fields: ::protobuf::SpecialFields::new(),
+        };
+        &instance
+    }
+}
+
+impl ::protobuf::MessageFull for MediaMessage {
+    fn descriptor() -> ::protobuf::reflect::MessageDescriptor {
+        static descriptor: ::protobuf::rt::Lazy<::protobuf::reflect::MessageDescriptor> = ::protobuf::rt::Lazy::new();
+        descriptor.get(|| file_descriptor().message_by_package_relative_name("MediaMessage").unwrap()).clone()
+    }
+}
+
+impl ::std::fmt::Display for MediaMessage {
+    fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+        ::protobuf::text_format::fmt(self, f)
+    }
+}
+
+impl ::protobuf::reflect::ProtobufValue for MediaMessage {
+    type RuntimeType = ::protobuf::reflect::rt::RuntimeTypeMessage<Self>;
+}
+
 #[derive(Clone,Copy,PartialEq,Eq,Debug,Hash)]
 // @@protoc_insertion_point(enum:digital_touch.TouchKind)
 pub enum TouchKind {
@@ -1019,6 +1159,8 @@ pub enum TouchKind {
     Heartbeat = 3,
     // @@protoc_insertion_point(enum_value:digital_touch.TouchKind.Sketch)
     Sketch = 4,
+    // @@protoc_insertion_point(enum_value:digital_touch.TouchKind.Media)
+    Media = 6,
     // @@protoc_insertion_point(enum_value:digital_touch.TouchKind.Kiss)
     Kiss = 7,
     // @@protoc_insertion_point(enum_value:digital_touch.TouchKind.Fireball)
@@ -1038,6 +1180,7 @@ impl ::protobuf::Enum for TouchKind {
             1 => ::std::option::Option::Some(TouchKind::Tap),
             3 => ::std::option::Option::Some(TouchKind::Heartbeat),
             4 => ::std::option::Option::Some(TouchKind::Sketch),
+            6 => ::std::option::Option::Some(TouchKind::Media),
             7 => ::std::option::Option::Some(TouchKind::Kiss),
             8 => ::std::option::Option::Some(TouchKind::Fireball),
             _ => ::std::option::Option::None
@@ -1050,6 +1193,7 @@ impl ::protobuf::Enum for TouchKind {
             "Tap" => ::std::option::Option::Some(TouchKind::Tap),
             "Heartbeat" => ::std::option::Option::Some(TouchKind::Heartbeat),
             "Sketch" => ::std::option::Option::Some(TouchKind::Sketch),
+            "Media" => ::std::option::Option::Some(TouchKind::Media),
             "Kiss" => ::std::option::Option::Some(TouchKind::Kiss),
             "Fireball" => ::std::option::Option::Some(TouchKind::Fireball),
             _ => ::std::option::Option::None
@@ -1061,6 +1205,7 @@ impl ::protobuf::Enum for TouchKind {
         TouchKind::Tap,
         TouchKind::Heartbeat,
         TouchKind::Sketch,
+        TouchKind::Media,
         TouchKind::Kiss,
         TouchKind::Fireball,
     ];
@@ -1078,8 +1223,9 @@ impl ::protobuf::EnumFull for TouchKind {
             TouchKind::Tap => 1,
             TouchKind::Heartbeat => 2,
             TouchKind::Sketch => 3,
-            TouchKind::Kiss => 4,
-            TouchKind::Fireball => 5,
+            TouchKind::Media => 4,
+            TouchKind::Kiss => 5,
+            TouchKind::Fireball => 6,
         };
         Self::enum_descriptor().value_by_index(index)
     }
@@ -1116,9 +1262,12 @@ static file_descriptor_proto_data: &'static [u8] = b"\
     \x20\x01(\x02R\x08Duration\x12\x16\n\x06StartX\x18\x02\x20\x01(\x02R\x06\
     StartX\x12\x16\n\x06StartY\x18\x03\x20\x01(\x02R\x06StartY\x12\x16\n\x06\
     Delays\x18\x04\x20\x01(\x0cR\x06Delays\x12\x16\n\x06Points\x18\x05\x20\
-    \x01(\x0cR\x06Points*T\n\tTouchKind\x12\x0b\n\x07Unknown\x10\0\x12\x07\n\
-    \x03Tap\x10\x01\x12\r\n\tHeartbeat\x10\x03\x12\n\n\x06Sketch\x10\x04\x12\
-    \x08\n\x04Kiss\x10\x07\x12\x0c\n\x08Fireball\x10\x08b\x06proto3\
+    \x01(\x0cR\x06Points\"F\n\x0cMediaMessage\x12\x18\n\x07Archive\x18\x02\
+    \x20\x01(\x0cR\x07Archive\x12\x1c\n\tMediaType\x18\x04\x20\x01(\x04R\tMe\
+    diaType*_\n\tTouchKind\x12\x0b\n\x07Unknown\x10\0\x12\x07\n\x03Tap\x10\
+    \x01\x12\r\n\tHeartbeat\x10\x03\x12\n\n\x06Sketch\x10\x04\x12\t\n\x05Med\
+    ia\x10\x06\x12\x08\n\x04Kiss\x10\x07\x12\x0c\n\x08Fireball\x10\x08b\x06p\
+    roto3\
 ";
 
 /// `FileDescriptorProto` object which was a source for this generated file
@@ -1136,13 +1285,14 @@ pub fn file_descriptor() -> &'static ::protobuf::reflect::FileDescriptor {
     file_descriptor.get(|| {
         let generated_file_descriptor = generated_file_descriptor_lazy.get(|| {
             let mut deps = ::std::vec::Vec::with_capacity(0);
-            let mut messages = ::std::vec::Vec::with_capacity(6);
+            let mut messages = ::std::vec::Vec::with_capacity(7);
             messages.push(BaseMessage::generated_message_descriptor_data());
             messages.push(TapMessage::generated_message_descriptor_data());
             messages.push(SketchMessage::generated_message_descriptor_data());
             messages.push(KissMessage::generated_message_descriptor_data());
             messages.push(HeartbeatMessage::generated_message_descriptor_data());
             messages.push(FireballMessage::generated_message_descriptor_data());
+            messages.push(MediaMessage::generated_message_descriptor_data());
             let mut enums = ::std::vec::Vec::with_capacity(1);
             enums.push(TouchKind::generated_enum_descriptor_data());
             ::protobuf::reflect::GeneratedFileDescriptor::new_generated(

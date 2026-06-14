@@ -1,9 +1,10 @@
 /*!
- This module defines traits for table representations and stores some shared table constants.
+ Table traits, database connection helpers, and shared table constants.
 
- # Zero-Allocation Streaming API
+ # Streaming API
 
- This module provides zero-allocation streaming capabilities for all database tables through a callback-based API.
+ The streaming API processes each row through a callback without collecting the
+ table into a `Vec`.
 
  ```no_run
  use imessage_database::{
@@ -27,7 +28,7 @@
  }).unwrap();
  ```
 
- Note: you can substitute `TableError` with your own error type if it implements `From<TableError>`. See the [`Table::stream`] method for more details.
+ The callback may return any error type that implements `From<TableError>`.
 */
 
 use std::{collections::HashMap, fs::metadata, path::Path};
@@ -39,7 +40,7 @@ use rusqlite::{
 use crate::error::table::{TableConnectError, TableError};
 
 // MARK: Traits
-/// Defines behavior for SQL Table data
+/// Database table model that can deserialize itself from SQLite rows.
 pub trait Table: Sized {
     /// Deserialize a single row into `Self`. Returns [`rusqlite::Result`]
     /// for direct use inside `rusqlite::query_map` / `query_row`
@@ -47,7 +48,7 @@ pub trait Table: Sized {
     /// [`Table::row`].
     fn from_row(row: &Row) -> Result<Self>;
 
-    /// Prepare SELECT * statement
+    /// Prepare the table's default `SELECT *` statement.
     fn get(db: &'_ Connection) -> Result<CachedStatement<'_>, TableError>;
 
     /// Iterate over rows produced by `stmt`, deserializing each via
@@ -100,7 +101,6 @@ pub trait Table: Sized {
     ///    util::dirs::default_db_path
     /// };
     ///
-    /// // Get a connection to the database
     /// let db_path = default_db_path();
     /// let db = get_connection(&db_path).unwrap();
     ///
@@ -121,14 +121,7 @@ pub trait Table: Sized {
         stream_table_callback::<Self, F, E>(db, callback)
     }
 
-    /// Get a BLOB from the table
-    ///
-    /// # Arguments
-    ///
-    /// * `db` - The database connection
-    /// * `table` - The name of the table
-    /// * `column` - The name of the column containing the BLOB
-    /// * `rowid` - The row ID to retrieve the BLOB from
+    /// Open a `BLOB` column for the supplied `rowid`.
     fn get_blob<'a>(
         &self,
         db: &'a Connection,
@@ -140,7 +133,7 @@ pub trait Table: Sized {
             .ok()
     }
 
-    /// Check if a BLOB exists in the table
+    /// Return whether a `BLOB` column is non-null for the supplied `rowid`.
     fn has_blob(&self, db: &Connection, table: &str, column: &str, rowid: i64) -> bool {
         let sql = std::format!(
             "SELECT ({column} IS NOT NULL) AS not_null
@@ -179,18 +172,18 @@ where
     Ok(())
 }
 
-/// Defines behavior for table data that can be cached in memory
+/// Table data that can be materialized into an in-memory map.
 pub trait Cacheable {
-    /// The key type for the cache `HashMap`
+    /// Key type for the cache map.
     type K;
-    /// The value type for the cache `HashMap`
+    /// Value type for the cache map.
     type V;
-    /// Caches the table data in a `HashMap`
+    /// Build the cache from the database.
     fn cache(db: &Connection) -> Result<HashMap<Self::K, Self::V>, TableError>;
 }
 
 // MARK: Database
-/// Get a connection to the iMessage `SQLite` database
+/// Open the Messages `SQLite` database read-only.
 /// # Example:
 ///
 /// ```
@@ -209,8 +202,7 @@ pub fn get_connection(path: &Path) -> Result<Connection, TableError> {
             OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
         ) {
             Ok(connection) => {
-                // Memory-map the file so page reads come from the mapped region
-                // instead of read() syscalls + page-cache copies
+                // Read pages from the mapped region where SQLite supports it.
                 let _ = connection.pragma_update(None, "mmap_size", 8_589_934_592_i64); // up to 8 GiB
                 let _ = connection.pragma_update(None, "cache_size", -65_536_i64); // ~64 MiB
                 Ok(connection)
@@ -234,7 +226,7 @@ pub fn get_connection(path: &Path) -> Result<Connection, TableError> {
     )))
 }
 
-/// Get the size of the database on the disk
+/// Return the database file size on disk.
 /// # Example:
 ///
 /// ```
@@ -252,53 +244,53 @@ pub fn get_db_size(path: &Path) -> Result<u64, TableError> {
 
 // MARK: Constants
 // Table Names
-/// Handle table name
+/// Handle table name.
 pub const HANDLE: &str = "handle";
-/// Message table name
+/// Message table name.
 pub const MESSAGE: &str = "message";
-/// Chat table name
+/// Chat table name.
 pub const CHAT: &str = "chat";
-/// Attachment table name
+/// Attachment table name.
 pub const ATTACHMENT: &str = "attachment";
-/// Chat to message join table name
+/// Chat-to-message join table name.
 pub const CHAT_MESSAGE_JOIN: &str = "chat_message_join";
-/// Message to attachment join table name
+/// Message-to-attachment join table name.
 pub const MESSAGE_ATTACHMENT_JOIN: &str = "message_attachment_join";
-/// Chat to handle join table name
+/// Chat-to-handle join table name.
 pub const CHAT_HANDLE_JOIN: &str = "chat_handle_join";
-/// Recently deleted messages table
+/// Recently deleted messages table.
 pub const RECENTLY_DELETED: &str = "chat_recoverable_message_join";
 
 // Column names
-/// The payload data column contains `plist`-encoded app message data
+/// [`plist`](crate::util::plist)-encoded app-message payload column.
 pub const MESSAGE_PAYLOAD: &str = "payload_data";
-/// The message summary info column contains `plist`-encoded edited message information
+/// [`plist`](crate::util::plist)-encoded message summary column.
 pub const MESSAGE_SUMMARY_INFO: &str = "message_summary_info";
-/// The `attributedBody` column contains [`typedstream`](crate::util::typedstream)-encoded message body text with many other attributes
+/// [`typedstream`](crate::util::typedstream)-encoded attributed body column.
 pub const ATTRIBUTED_BODY: &str = "attributedBody";
-/// The sticker user info column contains `plist`-encoded metadata for sticker attachments
+/// [`plist`](crate::util::plist)-encoded sticker metadata column.
 pub const STICKER_USER_INFO: &str = "sticker_user_info";
-/// The attribution info contains `plist`-encoded metadata for sticker attachments
+/// [`plist`](crate::util::plist)-encoded attachment attribution column.
 pub const ATTRIBUTION_INFO: &str = "attribution_info";
-/// The properties column contains `plist`-encoded metadata for a chat
+/// [`plist`](crate::util::plist)-encoded chat properties column.
 pub const PROPERTIES: &str = "properties";
 
 // Default information
-/// Name used for messages sent by the database owner in a first-person context
+/// First-person display name for the database owner.
 pub const ME: &str = "Me";
-/// Name used for messages sent by the database owner in a second-person context
+/// Second-person display name for the database owner.
 pub const YOU: &str = "You";
-/// Name used for contacts or chats where the name cannot be discovered
+/// Display name used when a contact or chat name is unavailable.
 pub const UNKNOWN: &str = "Unknown";
-/// Default location for the Messages database on macOS
+/// Default macOS Messages database path.
 pub const DEFAULT_PATH_MACOS: &str = "Library/Messages/chat.db";
-/// Default location for the Messages database in an iOS backup
+/// Default Messages database path inside an iOS backup.
 pub const DEFAULT_PATH_IOS: &str = "3d/3d0d7e5fb2ce288813306e4d4636395e047a3d28";
-/// Chat name reserved for messages that do not belong to a chat in the table
+/// Chat name reserved for messages that do not belong to a chat row.
 pub const ORPHANED: &str = "orphaned";
-/// Replacement text sent in Fitness.app messages
+/// Replacement token found in Fitness.app messages.
 pub const FITNESS_RECEIVER: &str = "$(kIMTranscriptPluginBreadcrumbTextReceiverIdentifier)";
-/// Name for attachments directory in exports
+/// Attachments directory name used in exports.
 pub const ATTACHMENTS_DIR: &str = "attachments";
 
 #[cfg(test)]

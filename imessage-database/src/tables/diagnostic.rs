@@ -1,5 +1,5 @@
 /*!
- This module contains data structures returned by diagnostic queries on iMessage database tables.
+ Diagnostic result types for Messages database tables.
 */
 
 use rusqlite::Connection;
@@ -54,59 +54,57 @@ fn quote_sqlite_identifier(identifier: &str) -> String {
     format!("\"{}\"", identifier.replace('"', "\"\""))
 }
 
-/// Diagnostic data for the `handle` table
+/// Diagnostic data for the `handle` table.
 #[derive(Debug)]
 pub struct HandleDiagnostic {
-    /// The total number of handles in the table
+    /// Total handles in the table.
     pub total_handles: usize,
-    /// The number of distinct `person_centric_id` values in the handle table, or `None` if the
-    /// column is unavailable on this database schema
+    /// Distinct `person_centric_id` values, or `None` when the column is unavailable.
     pub handles_with_multiple_ids: Option<usize>,
-    /// The number of handles that were deduplicated into canonical handles
+    /// Handles deduplicated into canonical handles.
     pub total_duplicated: usize,
 }
 
-/// Diagnostic data for the `message` table
+/// Diagnostic data for the `message` table.
 #[derive(Debug)]
 pub struct MessageDiagnostic {
-    /// The total number of messages in the table
+    /// Total messages in the table.
     pub total_messages: usize,
-    /// The number of messages not associated with any chat
+    /// Messages not associated with any chat.
     pub messages_without_chat: usize,
-    /// The number of messages that belong to more than one chat
+    /// Messages that belong to more than one chat.
     pub messages_in_multiple_chats: usize,
-    /// The number of recently deleted messages that are still recoverable, or `None` if the
-    /// recoverable messages table is unavailable on this database schema
+    /// Recently deleted messages that are still recoverable.
     pub recoverable_messages: Option<usize>,
-    /// The raw `date` value of the earliest message, or `None` if the table is empty
+    /// Raw `date` value of the earliest message.
     pub first_message_date: Option<i64>,
-    /// The raw `date` value of the most recent message, or `None` if the table is empty
+    /// Raw `date` value of the most recent message.
     pub last_message_date: Option<i64>,
 }
 
-/// Diagnostic data for the `attachment` table
+/// Diagnostic data for the `attachment` table.
 #[derive(Debug)]
 pub struct AttachmentDiagnostic {
-    /// The total number of attachments in the table
+    /// Total attachments in the table.
     pub total_attachments: usize,
-    /// The sum of `total_bytes` for all attachments referenced in the table
+    /// Sum of `total_bytes` for all attachment rows.
     pub total_bytes_referenced: u64,
-    /// The total size of attachment files present on disk
+    /// Total size of attachment files present on disk.
     pub total_bytes_on_disk: u64,
-    /// The number of attachments with missing files (no path or file not found)
+    /// Attachments with no path or no file at the resolved path.
     pub missing_files: usize,
-    /// The number of attachments with no path provided in the table
+    /// Attachments with no path in the table.
     pub no_path_provided: usize,
 }
 
 impl AttachmentDiagnostic {
-    /// The number of attachments where a path was provided but no file was found at that location
+    /// Attachments with a path but no file at that location.
     #[must_use]
     pub fn no_file_located(&self) -> usize {
         self.missing_files.saturating_sub(self.no_path_provided)
     }
 
-    /// The percentage of attachments that are missing, or `None` if there are no attachments
+    /// Percentage of attachments that are missing.
     #[must_use]
     pub fn missing_percent(&self) -> Option<f64> {
         if self.total_attachments > 0 {
@@ -117,14 +115,14 @@ impl AttachmentDiagnostic {
     }
 }
 
-/// Diagnostic data for chat-handle relationships (thread/chat deduplication)
+/// Diagnostic data for chat-handle relationships.
 #[derive(Debug)]
 pub struct ChatHandleDiagnostic {
-    /// The total number of chats in the table
+    /// Total chats in the table.
     pub total_chats: usize,
-    /// The number of chats that were deduplicated
+    /// Chats deduplicated into canonical chats.
     pub total_duplicated: usize,
-    /// The number of chats that have messages but no associated handles
+    /// Chats with messages but no associated handles.
     pub chats_with_no_handles: usize,
 }
 

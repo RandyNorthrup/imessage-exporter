@@ -1,5 +1,5 @@
 /*!
- Contains data structures used to describe database platforms.
+ Platform detection for Messages database paths.
 */
 
 use std::{fmt::Display, path::Path};
@@ -9,23 +9,21 @@ use crate::{
     tables::table::DEFAULT_PATH_IOS,
 };
 
-/// Represents the platform that created the database this library connects to
+/// Platform that produced the Messages database.
 #[derive(PartialEq, Eq, Debug)]
 pub enum Platform {
-    /// macOS-sourced data
+    /// macOS Messages database.
     #[allow(non_camel_case_types)]
     macOS,
-    /// iOS-sourced data
+    /// iOS backup containing a Messages database.
     #[allow(non_camel_case_types)]
     iOS,
 }
 
 impl Platform {
-    /// Try to determine the current platform, defaulting to macOS.
+    /// Detect whether a path points to an iOS backup root or a macOS database.
     pub fn determine(db_path: &Path) -> Result<Self, TableError> {
-        // If the path ends with the default iOS path,
-        // the user accidentally passed the full iOS path,
-        // not the root of the backup
+        // iOS inputs must be backup roots, not the nested database path.
         if db_path.ends_with(DEFAULT_PATH_IOS) {
             return Err(TableError::CannotConnect(TableConnectError::NotBackupRoot));
         }
@@ -35,11 +33,11 @@ impl Platform {
         } else if db_path.is_file() {
             return Ok(Self::macOS);
         }
-        // If we get here, the database is missing; that error is handled in the connection lifecycle
+        // Connection setup reports the missing path later.
         Ok(Self::default())
     }
 
-    /// Given user's input, return a variant if the input matches one
+    /// Parse a platform name from CLI input.
     #[must_use]
     pub fn from_cli(platform: &str) -> Option<Self> {
         match platform.to_lowercase().as_str() {

@@ -1,6 +1,13 @@
 syntax = 'proto3';
 package digital_touch;
 
+// Outer envelope shared by every Digital Touch effect.
+//
+// The raw `payload_data` blob decodes into this message. `TouchPayload` holds a
+// second, effect-specific protobuf selected by `TouchKind`. The sender also
+// stores a creation timestamp, a global color, and two trailing fields that are
+// always zero in observed data; those are left out here and parsed as unknown
+// fields because the per-effect payloads carry the meaningful state.
 message BaseMessage {
   TouchKind TouchKind = 1;
   bytes TouchPayload = 3;
@@ -14,39 +21,57 @@ enum TouchKind {
   Heartbeat = 3; // Also broken heart
   Sketch = 4;
   // 5?
-  // 6?
+  Media = 6; // Still image with optional overlays, or video
   Kiss = 7;
   Fireball = 8;
 }
 
+// Coordinates throughout are stored as little-endian `uint16` pairs (x, y) where
+// the full `0..=65535` range maps to `0.0..=1.0` of the canvas (a 4:5 portrait
+// on device), origin bottom-left (y grows upward). Colors are four bytes in RGBA
+// order. Delays are little-endian `uint16` values in milliseconds.
+
 message TapMessage {
-  bytes Delays = 2;
-  bytes Location = 3;
-  bytes Color = 4;
+  bytes Delays = 2;   // [uint16] one delay (ms) per tap
+  bytes Location = 3; // [(uint16 x, uint16 y)] one point per tap
+  bytes Color = 4;    // [RGBA] one color per tap
 }
 
 message SketchMessage {
-  int64 StrokesCount = 1;
+  int64 StrokesCount = 1; // number of strokes encoded in `Strokes`
+  // Concatenated strokes. Each stroke is:
+  //   uint16 ??     (per-stroke header, observed as 0)
+  //   uint16 Count  (number of points in the stroke)
+  //   [Count](uint16 x, uint16 y)
   bytes Strokes = 2;
-  bytes Colors = 3;
+  bytes Colors = 3; // [RGBA] one color per stroke
 }
 
 message KissMessage {
-  bytes Delays = 1;
-  bytes Points = 2;
-  bytes Rotations = 3;
+  bytes Delays = 1;    // [uint16] one delay (ms) per kiss
+  bytes Points = 2;    // [(uint16 x, uint16 y)] one point per kiss
+  bytes Rotations = 3; // [uint16] one rotation per kiss, in milliradians
 }
 
 message HeartbeatMessage {
   float  BPM = 1;
-  uint64 Duration = 2;
-  float  HeartBrokenAt = 6;
+  uint64 Duration = 2;      // seconds
+  float  HeartBrokenAt = 6; // seconds into the animation, 0 when not broken
 }
 
 message FireballMessage {
-  float Duration = 1;
-  float StartX = 2;
+  float Duration = 1; // seconds
+  float StartX = 2;   // start offset, centered (roughly -1.0..=1.0)
   float StartY = 3;
-  bytes Delays = 4;
-  bytes Points = 5;
+  bytes Delays = 4;   // [uint16] one delay (ms) per point
+  bytes Points = 5;   // [(uint16 x, uint16 y)] the dragged path
+}
+
+message MediaMessage {
+  // For image media, an `NSKeyedArchiver` archive holding an `NSMutableArray`
+  // of overlay effects. Each element is `NSData` containing a complete nested
+  // `BaseMessage`; supported overlays are any non-media `TouchKind`. The array
+  // is empty when nothing was drawn on top.
+  bytes Archive = 2;
+  uint64 MediaType = 4; // 1 = video, 2 = image
 }

@@ -11,7 +11,7 @@ use std::{
 
 use crabapple::error::BackupError;
 use imessage_database::{
-    error::{message::MessageError, table::TableError},
+    error::{message::MessageError, plist::PlistParseError, table::TableError},
     util::size::format_file_size,
 };
 
@@ -84,6 +84,12 @@ impl From<TableError> for RuntimeError {
 impl From<MessageError> for RuntimeError {
     fn from(err: MessageError) -> Self {
         RuntimeError::MessageError(err)
+    }
+}
+
+impl From<PlistParseError> for RuntimeError {
+    fn from(err: PlistParseError) -> Self {
+        RuntimeError::MessageError(MessageError::from(err))
     }
 }
 

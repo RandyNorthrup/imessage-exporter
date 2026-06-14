@@ -76,7 +76,7 @@ fn prompt_for_password() -> Result<String, RuntimeError> {
     })
 }
 
-/// Get the decrypted messages database from the iOS backup
+/// Write the decrypted Messages database from the iOS backup to a temp file.
 ///
 /// The real name is `Library/SMS/sms.db`
 pub fn get_decrypted_message_database(backup: &Backup) -> Result<PathBuf, RuntimeError> {
@@ -95,7 +95,7 @@ pub fn get_decrypted_message_database(backup: &Backup) -> Result<PathBuf, Runtim
     Ok(tmp_path)
 }
 
-/// Get the decrypted contacts database from the iOS backup
+/// Write the decrypted Contacts database from the iOS backup to a temp file.
 ///
 /// The real name is `Library/AddressBook/AddressBook.sqlitedb`
 pub fn get_decrypted_contacts_database(backup: &Backup) -> Result<PathBuf, RuntimeError> {
@@ -115,7 +115,7 @@ pub fn get_decrypted_contacts_database(backup: &Backup) -> Result<PathBuf, Runti
     Ok(tmp_path)
 }
 
-/// Decrypt a file from the iOS backup
+/// Decrypt one iOS backup file into a temporary file.
 pub fn decrypt_file(backup: &Backup, from: &Path) -> Result<PathBuf, RuntimeError> {
     match backup.get_file(
         from.file_name()
@@ -135,8 +135,7 @@ pub fn decrypt_file(backup: &Backup, from: &Path) -> Result<PathBuf, RuntimeErro
 
             // Get the size of the file
             let file_size = file.metadata.size;
-            // If the file is larger than 25MB, we will stream decryption from/to disk
-            // otherwise, we will decrypt in memory
+            // Stream larger files to avoid holding them in memory.
             if file_size > MAX_IN_MEMORY_DECRYPT {
                 // Copy via disk
                 let mut decryption_stream = backup.decrypt_entry_stream(&file)?;
@@ -156,6 +155,6 @@ pub fn decrypt_file(backup: &Backup, from: &Path) -> Result<PathBuf, RuntimeErro
             // Ensure we remove the temporary file later
             Ok(temp_dir)
         }
-        Err(why) => Err(RuntimeError::BackupError(why)),
+        Err(why) => Err(why.into()),
     }
 }

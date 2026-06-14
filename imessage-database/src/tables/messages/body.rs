@@ -1,5 +1,5 @@
 /*
- Routines for working with `typedstream` data, focussing specifically on [`NSAttributedString`](https://developer.apple.com/documentation/foundation/nsattributedstring).
+ Routines for working with `typedstream` data, focusing on [`NSAttributedString`](https://developer.apple.com/documentation/foundation/nsattributedstring) payloads from `message.attributedBody`.
 */
 
 use std::{
@@ -7,23 +7,31 @@ use std::{
     sync::LazyLock,
 };
 
-use crabstep::{PropertyIterator, deserializer::iter::Property};
+use crabstep::{
+    PropertyIterator,
+    deserializer::{foundation::FoundationDict, iter::Property},
+};
 
 use crate::{
     message_types::{
         edited::{EditStatus, EditedMessage},
-        text_effects::{Animation, Style, TextEffect, Unit},
+        text_effects::{
+            animation::Animation,
+            detected::{
+                address::DetectedAddress, currency::DetectedCurrency, flight::Flight,
+                shipment_tracking::ShipmentTracking, unit::Unit,
+            },
+            style::Style,
+            text_effect::TextEffect,
+        },
     },
     tables::messages::models::{AttachmentMeta, AttributedRange, BubbleComponent},
-    util::typedstream::{
-        as_ns_dictionary, as_nsstring, as_nsurl, as_signed_integer, as_type_length_pair,
-    },
+    util::data_detected::FromScannerResult,
+    util::typedstream::as_type_length_pair,
 };
 
 // MARK: Constants
-/// `NSDictionary` keys that are used to identify attachment metadata
-/// If any of these keys are present in the message body, it is considered an attachment
-/// and the `AttachmentMeta` struct will be populated with the relevant data.
+/// `NSDictionary` keys that identify attachment metadata on a body range.
 static ATTACHMENT_META_KEYS: LazyLock<HashSet<&'static str>> = LazyLock::new(|| {
     HashSet::from([
         "__kIMFileTransferGUIDAttributeName",
@@ -33,48 +41,45 @@ static ATTACHMENT_META_KEYS: LazyLock<HashSet<&'static str>> = LazyLock::new(|| 
         "IMAudioTranscription",
     ])
 });
-/// Character found in message body text that indicates attachment position
+/// Character that marks an attachment position in body text.
 const ATTACHMENT_CHAR: char = '\u{FFFC}';
-/// Character found in message body text that indicates app message position
+/// Character that marks an app-message position in body text.
 const APP_CHAR: char = '\u{FFFD}';
-/// A collection of characters that represent non-text content within body text
+/// Non-text replacement characters in body text.
 const REPLACEMENT_CHARS: [char; 2] = [ATTACHMENT_CHAR, APP_CHAR];
 
-/// Indicates the outcome of parsing an attributed range: either an optional text effect or a style change.
+/// Attribute parser output for one key/value pair on an attributed range.
 #[derive(Debug, PartialEq)]
 pub enum RangeResult {
+    /// A complete text effect, or `None` when the key was not handled.
     Effect(Option<TextEffect>),
+    /// A style marker that will be merged into [`TextEffect::Styles`].
     Style(Style),
 }
 
-/// The result of parsing a message body, containing its components and optional plain text.
+/// Parsed attributed body content.
 #[derive(Debug, PartialEq)]
 pub struct ParseResult {
+    /// Bubble components reconstructed from attributed ranges.
     pub components: Vec<BubbleComponent>,
+    /// Plain message text, when present in the typedstream payload.
     pub text: Option<String>,
 }
 
 // MARK: Logic
-/// Logic to use deserialized `typedstream` data to parse the message body
+/// Parse a deserialized `typedstream` attributed body.
 ///
-/// Parses `typedstream` components and optional edited parts into message body components and text.
+/// The parser reads the [`NSAttributedString`](https://developer.apple.com/documentation/foundation/nsattributedstring) text, converts UTF-16 range
+/// offsets to byte offsets, builds [`AttributedRange`]s for text effects,
+/// styles, and inline attachments, then groups ranges into
+/// [`BubbleComponent::Run`] values by message part. Unsent edit parts are
+/// inserted as retracted components.
 ///
-/// Takes an optional [`PropertyIterator`] over `typedstream` data and optional edited parts,
-/// returning `Some(ParseResult)` when parsing yields components, otherwise `None`.
-///
-/// # Parameters
-///
-/// - `components`: Iterator over `typedstream` properties representing an `NSAttributedString`.
-/// - `edited_parts`: Optional edited message parts to mark unsent components.
-///
-/// # Returns
-///
-/// `Option<ParseResult>` containing parsed components and text, or `None` if no components found.
+/// Returns `None` only when no text was read and no components were produced.
 pub fn parse_body_typedstream<'a>(
     components: Option<PropertyIterator<'a, 'a>>,
     edited_parts: Option<&'a EditedMessage>,
 ) -> Option<ParseResult> {
-    // Create the output data
     let mut message_text = None;
 
     // Flat list of attributed ranges paired with their
@@ -84,70 +89,61 @@ pub fn parse_body_typedstream<'a>(
 
     // Format ranges are only stored once and then referenced by order of
     // appearance, so we cache them to reapply styles and attributes. The key is
-    // the range ID; the value is the previously built range plus its part
-    // index. A cache hit means an identical attribute dictionary, hence an
-    // identical part index, so reusing the cached part is sound.
+    // the range ID; the value is the cached range plus its part index. A cache
+    // hit means an identical attribute dictionary, hence an identical part
+    // index, so reusing the cached part is sound.
     let mut format_range_cache: HashMap<i64, (AttributedRange, i64)> = HashMap::with_capacity(4);
 
-    // Start to iterate over the ranges
     let mut current_range_id;
     let mut current_start;
-    let mut current_end = 0;
+    let mut current_end: usize = 0;
 
-    if let Some(mut components) = components {
-        // The first component is the text itself
-        if let Some(text) = components.next().as_ref().and_then(as_nsstring) {
-            message_text = Some(text.to_string());
-            // We want to index into the message text, so we need a table to align
-            // Apple's indexes with the actual chars, not the bytes
-            let utf16_to_byte: Vec<usize> = build_utf16_to_byte_map(text);
+    // The first component is the text itself
+    if let Some(mut components) = components
+        && let Some(text) = components.next().as_ref().and_then(Property::as_string)
+    {
+        message_text = Some(text.to_string());
 
-            while let Some(property) = components.next() {
-                // The first part of the range represents the index in the format cache
-                // the second part is the length of the range in UTF-16 code units
-                if let Some(range) = as_type_length_pair(&property) {
-                    current_start = current_end;
-                    current_end += range.length as usize;
-                    current_range_id = range.type_index;
+        // We want to index into the message text, so we need a table to align
+        // Apple's indexes with the actual chars, not the bytes
+        let utf16_to_byte: Vec<usize> = build_utf16_to_byte_map(text);
 
-                    let built = format_range_cache
-                        .get(&current_range_id)
-                        .cloned()
-                        // Try to reuse a cached range. Only text ranges are
-                        // reusable; attachment ranges carry occurrence-specific
-                        // metadata (e.g. the file-transfer GUID), so they are
-                        // always rebuilt from their own dictionary.
-                        .and_then(|(mut cached, part)| {
-                            if cached.attachment.is_none() {
-                                cached.start = utf16_idx(text, current_start, &utf16_to_byte);
-                                cached.end = utf16_idx(text, current_end, &utf16_to_byte);
-                                return Some((cached, part));
-                            }
-                            None
-                        })
-                        // If that failed, build a new range from the next dictionary.
-                        .or_else(|| {
-                            components
-                                .next()
-                                .as_ref()
-                                .and_then(as_ns_dictionary)
-                                .and_then(|dict| {
-                                    build_range(
-                                        dict,
-                                        text,
-                                        current_start,
-                                        current_end,
-                                        &utf16_to_byte,
-                                    )
+        while let Some(property) = components.next() {
+            // The first part of the range represents the index in the format cache
+            // the second part is the length of the range in UTF-16 code units
+            if let Some(range) = as_type_length_pair(&property) {
+                current_start = current_end;
+                current_end = current_end.saturating_add(range.length as usize);
+                current_range_id = range.type_index;
+
+                let built = format_range_cache
+                    .get(&current_range_id)
+                    .cloned()
+                    // Only text ranges are reusable; attachment ranges carry
+                    // occurrence-specific metadata such as file-transfer GUIDs.
+                    .and_then(|(mut cached, part)| {
+                        if cached.attachment.is_none() {
+                            cached.start = utf16_idx(text, current_start, &utf16_to_byte);
+                            cached.end = utf16_idx(text, current_end, &utf16_to_byte);
+                            return Some((cached, part));
+                        }
+                        None
+                    })
+                    .or_else(|| {
+                        components
+                            .next()
+                            .as_ref()
+                            .and_then(Property::as_dictionary)
+                            .and_then(|dict| {
+                                build_range(dict, text, current_start, current_end, &utf16_to_byte)
                                     .inspect(|built| {
                                         format_range_cache.insert(current_range_id, built.clone());
                                     })
-                                })
-                        });
+                            })
+                    });
 
-                    if let Some(built) = built {
-                        ranges.push(built);
-                    }
+                if let Some(built) = built {
+                    ranges.push(built);
                 }
             }
         }
@@ -217,64 +213,58 @@ fn utf16_idx(text: &str, idx: usize, map: &[usize]) -> usize {
 
 /// Builds a single [`AttributedRange`] from one typedstream range's
 /// `NSDictionary`, walking *every* key so attachment metadata, text effects,
-/// styles, and the inline-emoji hint are all captured on the same range
-/// (unlike the previous parser, which early-exited on the first attachment-meta
-/// key and dropped its siblings).
+/// styles, and the inline-emoji hint are all captured on the same range.
 ///
 /// Returns the range together with its `__kIMMessagePartAttributeName` index
 /// (or `-1` when the attribute is absent), which the caller uses to group
 /// ranges into bubbles.
 fn build_range<'a>(
-    mut components: PropertyIterator<'a, 'a>,
+    dict: FoundationDict<'a, 'a>,
     text: &str,
     start: usize,
     end: usize,
     utf16_to_byte: &[usize],
 ) -> Option<(AttributedRange, i64)> {
-    // The first item in `components` is the number of key/value pairs in the `NSDictionary`
-    let num_objects = components.next().as_ref().and_then(as_signed_integer)?;
-
     // The start and end indexes are based on the `UTF-16` char indexes of the text, so we need to convert them
     let range_start = utf16_idx(text, start, utf16_to_byte);
     let range_end = utf16_idx(text, end, utf16_to_byte);
 
-    let mut effects = Vec::with_capacity(num_objects as usize);
+    let mut effects = Vec::with_capacity(dict.len());
     let mut styles = Vec::new();
     let mut attachment: Option<AttachmentMeta> = None;
     let mut emoji_image = false;
     // `-1` sentinel: this range carries no part attribute.
     let mut message_part: i64 = -1;
 
-    // Iterate over the key/value pairs in the `NSDictionary` data
-    for _ in 0..num_objects {
-        let key = components.next()?;
-
-        // Convert the key to a string
-        let key_name = as_nsstring(&key)?;
+    // Iterate over the key/value pairs in the `NSDictionary`; `as_dictionary`
+    // already skipped the leading count group and yields complete pairs.
+    for (key, value) in dict {
+        // Keys are strings; skip a malformed non-string key rather than
+        // discarding the rest of the range.
+        let Some(key_name) = key.as_string() else {
+            continue;
+        };
 
         // Attachment-meta keys populate this range's `AttachmentMeta` in place.
         // We intentionally do not early-exit: sibling keys on the same range
         // (text effects, the emoji-image hint, the part index) are still read.
         if ATTACHMENT_META_KEYS.contains(key_name) {
-            let value = components.next()?;
             attachment
                 .get_or_insert_with(AttachmentMeta::default)
                 .set_from_key_value(key_name, &value);
             continue;
         }
 
-        let value = components.next()?;
         match key_name {
             "__kIMMessagePartAttributeName" => {
-                if let Some(part) = as_signed_integer(&value) {
+                if let Some(part) = value.as_i64() {
                     message_part = part;
                 }
             }
             // Apple's inline-rendering hint; value `1` means "render inline".
             "__kIMEmojiImageAttributeName" => {
-                emoji_image = as_signed_integer(&value) == Some(1);
+                emoji_image = value.as_i64() == Some(1);
             }
-            // Determine the text effects or styles based on the key name
             _ => match get_text_effects(key_name, &value) {
                 RangeResult::Effect(Some(text_effect)) => effects.push(text_effect),
                 RangeResult::Style(style) => styles.push(style),
@@ -283,14 +273,13 @@ fn build_range<'a>(
         }
     }
 
-    // A text range with no effects still gets the explicit `Default` marker
-    // (mirrors the historical behavior). Attachment ranges keep an empty
-    // effects vec unless a real effect actually applied to them.
+    // A text range with no effects still gets the explicit `Default` marker.
+    // Attachment ranges keep an empty effects vec unless a real effect applied.
     if attachment.is_none() && effects.is_empty() && styles.is_empty() {
         effects.push(TextEffect::Default);
     }
 
-    // Styles ride along inside `effects` as a single `Styles(..)` entry, as before.
+    // Styles are represented as a single `TextEffect::Styles` entry.
     if !styles.is_empty() {
         effects.push(TextEffect::Styles(styles));
     }
@@ -311,12 +300,12 @@ fn build_range<'a>(
 fn get_text_effects<'a>(key_name: &'a str, value: &Property<'a, 'a>) -> RangeResult {
     match key_name {
         "__kIMMentionConfirmedMention" => {
-            if let Some(mention_value) = as_nsstring(value) {
+            if let Some(mention_value) = value.as_string() {
                 return RangeResult::Effect(Some(TextEffect::Mention(mention_value.to_string())));
             }
         }
         "__kIMLinkAttributeName" => {
-            if let Some(url) = as_nsurl(value) {
+            if let Some(url) = value.as_url() {
                 return RangeResult::Effect(Some(TextEffect::Link(url.to_string())));
             }
         }
@@ -326,14 +315,36 @@ fn get_text_effects<'a>(key_name: &'a str, value: &Property<'a, 'a>) -> RangeRes
         "__kIMCalendarEventAttributeName" => {
             return RangeResult::Effect(Some(TextEffect::Conversion(Unit::Timezone)));
         }
+        "__kIMDataDetectedAttributeName" => {
+            // This attribute carries unrelated detector payloads. Per-type
+            // markers let negative probes return before plist deserialization.
+            return RangeResult::Effect(
+                Unit::from_attribute(value)
+                    .map(TextEffect::Conversion)
+                    .or_else(|| ShipmentTracking::from_attribute(value).map(TextEffect::Tracking))
+                    .or_else(|| Flight::from_attribute(value).map(TextEffect::Flight)),
+            );
+        }
+        "__kIMMoneyAttributeName" => {
+            return RangeResult::Effect(
+                DetectedCurrency::from_attribute(value).map(TextEffect::Currency),
+            );
+        }
+        "__kIMAddressAttributeName" => {
+            return RangeResult::Effect(
+                DetectedAddress::from_attribute(value)
+                    .map(Box::new)
+                    .map(TextEffect::Address),
+            );
+        }
         "__kIMTextEffectAttributeName" => {
-            if let Some(effect_id) = as_signed_integer(value) {
+            if let Some(effect_id) = value.as_i64() {
                 return RangeResult::Effect(Some(TextEffect::Animated(Animation::from_id(
                     effect_id,
                 ))));
             }
         }
-        // Collect style attributes for later processing
+        // Styles are collected and merged into one `TextEffect::Styles` value.
         "__kIMTextBoldAttributeName" => return RangeResult::Style(Style::Bold),
         "__kIMTextUnderlineAttributeName" => return RangeResult::Style(Style::Underline),
         "__kIMTextItalicAttributeName" => return RangeResult::Style(Style::Italic),
@@ -347,13 +358,11 @@ fn get_text_effects<'a>(key_name: &'a str, value: &Property<'a, 'a>) -> RangeRes
 }
 
 // MARK: Fallback
-/// Fallback logic to parse the body from the message string content
+/// Parse body components from the plain message string.
 pub(crate) fn parse_body_legacy(text: &Option<String>) -> Vec<BubbleComponent> {
     let mut out_v = vec![];
-    // Naive logic for when `typedstream` component parsing fails. We have no
-    // part indexes here, so each text segment and each attachment becomes its
-    // own single-range `Run`, preserving the per-segment bubble boundaries the
-    // previous shape produced.
+    // There are no part indexes in the fallback string path, so each text
+    // segment and each attachment becomes its own single-range `Run`.
     match text {
         Some(text) => {
             let mut start: usize = 0;
@@ -411,7 +420,15 @@ mod typedstream_tests {
     use crate::{
         message_types::{
             edited::{EditStatus, EditedEvent, EditedMessage, EditedMessagePart},
-            text_effects::{Animation, Style, TextEffect, Unit},
+            text_effects::{
+                animation::Animation,
+                detected::{
+                    address::DetectedAddress, currency::DetectedCurrency, flight::Flight,
+                    shipment_tracking::ShipmentTracking, unit::Unit,
+                },
+                style::Style,
+                text_effect::TextEffect,
+            },
         },
         tables::messages::{
             Message,
@@ -459,6 +476,170 @@ mod typedstream_tests {
                     3,
                     meta("34D71074-FBCF-4E4A-BB53-54CE92660C22"),
                 )
+            ])]
+        );
+    }
+
+    #[test]
+    fn can_get_message_body_data_detected_conversions() {
+        let (text, components) = parse_typedstream_fixture("CurrencyTemperatureVolumeWeight");
+        assert_eq!(
+            text.as_deref(),
+            Some("$100\n\n75℉\n\n1L of water\n\n225lbs")
+        );
+        assert_eq!(
+            components,
+            vec![BubbleComponent::Run(vec![
+                AttributedRange::text(0, 6, vec![TextEffect::Default]),
+                AttributedRange::text(6, 11, vec![TextEffect::Conversion(Unit::Temperature)]),
+                AttributedRange::text(11, 13, vec![TextEffect::Default]),
+                AttributedRange::text(13, 15, vec![TextEffect::Conversion(Unit::Volume)]),
+                AttributedRange::text(15, 26, vec![TextEffect::Default]),
+                AttributedRange::text(26, 32, vec![TextEffect::Conversion(Unit::Weight)]),
+            ])]
+        );
+    }
+
+    #[test]
+    fn can_get_message_body_detected_address() {
+        let (text, components) = parse_typedstream_fixture("Address");
+        assert_eq!(
+            text.as_deref(),
+            Some("1 Apple Park Way, Cupertino, CA 95014")
+        );
+        assert_eq!(
+            components,
+            vec![BubbleComponent::Run(vec![AttributedRange::text(
+                0,
+                37,
+                vec![TextEffect::Address(Box::new(DetectedAddress {
+                    full: "1 Apple Park Way, Cupertino, CA 95014".to_string(),
+                    street: Some("1 Apple Park Way".to_string()),
+                    street_number: Some("1".to_string()),
+                    street_name: Some("Apple Park Way".to_string()),
+                    city: Some("Cupertino".to_string()),
+                    state: Some("CA".to_string()),
+                    zip: Some("95014".to_string()),
+                    country: None,
+                    country_code: None,
+                }))]
+            )])]
+        );
+    }
+
+    #[test]
+    fn can_get_message_body_detected_currency() {
+        let (text, components) = parse_typedstream_fixture("Currency");
+        assert_eq!(text.as_deref(), Some("My burrito was $16"));
+        assert_eq!(
+            components,
+            vec![BubbleComponent::Run(vec![
+                AttributedRange::text(0, 15, vec![TextEffect::Default]),
+                AttributedRange::text(
+                    15,
+                    18,
+                    vec![TextEffect::Currency(DetectedCurrency {
+                        symbol: "$".to_string(),
+                        amount: "16".to_string(),
+                    })]
+                ),
+            ])]
+        );
+    }
+
+    #[test]
+    fn can_get_message_body_detected_currency_money_amount() {
+        let (text, components) = parse_typedstream_fixture("CurrencyMoneyAmount");
+        assert_eq!(text.as_deref(), Some("$15/mo"));
+        assert_eq!(
+            components,
+            vec![BubbleComponent::Run(vec![
+                AttributedRange::text(
+                    0,
+                    3,
+                    vec![TextEffect::Currency(DetectedCurrency {
+                        symbol: "$".to_string(),
+                        amount: "15".to_string(),
+                    })]
+                ),
+                AttributedRange::text(3, 6, vec![TextEffect::Default]),
+            ])]
+        );
+    }
+
+    #[test]
+    fn can_get_message_body_detected_tracking() {
+        let (text, components) = parse_typedstream_fixture("Tracking");
+        assert_eq!(text.as_deref(), Some("1Z999AA10123456784"));
+        assert_eq!(
+            components,
+            vec![BubbleComponent::Run(vec![AttributedRange::text(
+                0,
+                18,
+                vec![TextEffect::Tracking(ShipmentTracking {
+                    carrier: Some("UPS".to_string()),
+                    number: "1Z999AA10123456784".to_string(),
+                })]
+            )])]
+        );
+    }
+
+    #[test]
+    fn can_get_message_body_detected_flight() {
+        let (text, components) = parse_typedstream_fixture("Flight");
+        assert_eq!(text.as_deref(), Some("AS 1111"));
+        assert_eq!(
+            components,
+            vec![BubbleComponent::Run(vec![AttributedRange::text(
+                0,
+                7,
+                vec![TextEffect::Flight(Flight {
+                    airline: Some("AS".to_string()),
+                    number: "1111".to_string(),
+                })]
+            )])]
+        );
+    }
+
+    #[test]
+    fn can_get_message_body_all_unit_conversions() {
+        let (text, components) = parse_typedstream_fixture("AllUnits");
+        assert_eq!(
+            text.as_deref(),
+            Some(
+                "40° angle\n120 sqft\n100 USD\n12 miles\n1 gallon\n2:00\n25 watts\n1000hp\n65 mph\n25 mpg\n12 bar\n70℉\n12 PDT\n225 lbs"
+            )
+        );
+        assert_eq!(
+            components,
+            vec![BubbleComponent::Run(vec![
+                AttributedRange::text(
+                    0,
+                    4,
+                    vec![TextEffect::Conversion(Unit::Unknown(
+                        "celsius-fahrenheit-degree".to_string()
+                    ))]
+                ), // "40°"
+                AttributedRange::text(4, 11, vec![TextEffect::Default]), // " angle\n"
+                AttributedRange::text(11, 19, vec![TextEffect::Conversion(Unit::Area)]), // "120 sqft"
+                AttributedRange::text(19, 28, vec![TextEffect::Default]), // "\n100 USD\n"
+                AttributedRange::text(28, 36, vec![TextEffect::Conversion(Unit::Distance)]), // "12 miles"
+                AttributedRange::text(36, 37, vec![TextEffect::Default]),                    // "\n"
+                AttributedRange::text(37, 45, vec![TextEffect::Conversion(Unit::Volume)]), // "1 gallon"
+                AttributedRange::text(45, 46, vec![TextEffect::Default]),                  // "\n"
+                AttributedRange::text(46, 50, vec![TextEffect::Conversion(Unit::Timezone)]), // "2:00"
+                AttributedRange::text(50, 51, vec![TextEffect::Default]),                    // "\n"
+                AttributedRange::text(51, 59, vec![TextEffect::Conversion(Unit::Power)]), // "25 watts"
+                AttributedRange::text(59, 67, vec![TextEffect::Default]), // "\n1000hp\n"
+                AttributedRange::text(67, 73, vec![TextEffect::Conversion(Unit::Speed)]), // "65 mph"
+                AttributedRange::text(73, 74, vec![TextEffect::Default]),                 // "\n"
+                AttributedRange::text(74, 80, vec![TextEffect::Conversion(Unit::FuelEfficiency)]), // "25 mpg"
+                AttributedRange::text(80, 81, vec![TextEffect::Default]), // "\n"
+                AttributedRange::text(81, 87, vec![TextEffect::Conversion(Unit::Pressure)]), // "12 bar"
+                AttributedRange::text(87, 88, vec![TextEffect::Default]),                    // "\n"
+                AttributedRange::text(88, 93, vec![TextEffect::Conversion(Unit::Temperature)]), // "70℉"
+                AttributedRange::text(93, 101, vec![TextEffect::Default]), // "\n12 PDT\n"
+                AttributedRange::text(101, 108, vec![TextEffect::Conversion(Unit::Weight)]), // "225 lbs"
             ])]
         );
     }
@@ -1867,7 +2048,7 @@ mod typedstream_tests {
 #[cfg(test)]
 mod legacy_tests {
     use crate::{
-        message_types::text_effects::TextEffect,
+        message_types::text_effects::text_effect::TextEffect,
         tables::messages::{
             Message,
             body::parse_body_legacy,

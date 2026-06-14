@@ -108,7 +108,7 @@ impl AppMessage<'_> {
         } else {
             return None;
         };
-        let date_stamp = date_str.parse::<f64>().ok()? as i64 * TIMESTAMP_FACTOR;
+        let date_stamp = (date_str.parse::<f64>().ok()? as i64).checked_mul(TIMESTAMP_FACTOR)?;
         let date_time = get_local_time(date_stamp, offset).ok()?;
         Some((kind, date_time))
     }
@@ -187,6 +187,15 @@ mod tests {
     #[test]
     fn check_in_kind_returns_none_for_unparsable_timestamp() {
         let balloon = check_in_msg("?sendDate=not_a_number");
+        assert!(balloon.check_in_kind(0).is_none());
+    }
+
+    #[test]
+    fn check_in_kind_returns_none_for_overflowing_timestamp() {
+        // The nanosecond conversion (`seconds * 1_000_000_000`) overflows i64 for
+        // this value; it must degrade to None rather than panic (debug) or wrap to
+        // a bogus date (release).
+        let balloon = check_in_msg("?sendDate=99999999999");
         assert!(balloon.check_in_kind(0).is_none());
     }
 

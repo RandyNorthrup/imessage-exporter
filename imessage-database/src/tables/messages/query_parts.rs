@@ -1,8 +1,8 @@
 /*!
- Query data to ensure query compatibility with older known schemas
+ Message query templates for supported database schemas.
 
  - If the database has `chat_recoverable_message_join`, we can restore some deleted messages.
- - If database has `thread_originator_guid`, we can parse replies, otherwise default to 0
+ - If the database has `thread_originator_guid`, we can count replies.
 */
 
 use std::sync::LazyLock;
@@ -13,7 +13,7 @@ use crate::tables::{
 };
 
 // MARK: Queries
-/// macOS Ventura+ and iOS 16+ schema, interpolated with required columns for performance
+/// macOS Ventura+ and iOS 16+ query head.
 static IOS_16_NEWER_HEAD: LazyLock<String> = LazyLock::new(|| {
     format!("
 SELECT
@@ -29,7 +29,7 @@ LEFT JOIN {RECENTLY_DELETED} as d ON m.ROWID = d.message_id
 ")
 });
 
-/// macOS Big Sur to Monterey, iOS 14 to iOS 15 schema
+/// macOS Big Sur to Monterey, iOS 14 to iOS 15 query head.
 static IOS_14_15_HEAD: LazyLock<String> = LazyLock::new(|| {
     format!("
 SELECT
@@ -44,7 +44,7 @@ LEFT JOIN {CHAT_MESSAGE_JOIN} as c ON m.ROWID = c.message_id
 ")
 });
 
-/// macOS Catalina, iOS 13 and older schema
+/// macOS Catalina, iOS 13 and older query head.
 static IOS_13_OLDER_HEAD: LazyLock<String> = LazyLock::new(|| {
     format!("
 SELECT
@@ -65,7 +65,7 @@ ORDER BY
 ";
 
 // MARK: Functions
-/// Generate a SQL Query compatible with the macOS Ventura+ and iOS 16+ schema
+/// Build a query for the macOS Ventura+ and iOS 16+ schema.
 pub(crate) fn ios_16_newer_query(filters: Option<&str>) -> String {
     format!(
         "{}{}{}",
@@ -75,7 +75,7 @@ pub(crate) fn ios_16_newer_query(filters: Option<&str>) -> String {
     )
 }
 
-/// Generate a SQL Query compatible with the macOS Big Sur to Monterey, iOS 14 to iOS 15 schema
+/// Build a query for the macOS Big Sur to Monterey, iOS 14 to iOS 15 schema.
 pub(crate) fn ios_14_15_query(filters: Option<&str>) -> String {
     format!(
         "{}{}{}",
@@ -85,7 +85,7 @@ pub(crate) fn ios_14_15_query(filters: Option<&str>) -> String {
     )
 }
 
-/// Generate a SQL Query compatible with the macOS Catalina, iOS 13 and older schema
+/// Build a query for the macOS Catalina, iOS 13 and older schema.
 pub(crate) fn ios_13_older_query(filters: Option<&str>) -> String {
     format!(
         "{}{}{}",

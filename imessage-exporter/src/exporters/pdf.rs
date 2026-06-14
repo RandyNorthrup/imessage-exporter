@@ -292,12 +292,13 @@ fn collect_image_attachments(
             continue;
         }
 
-        if let Err(why) =
-            config
-                .options
-                .attachment_manager
-                .handle_attachment(msg, &mut attachment, config)
-        {
+        // Copy/convert the attachment via the shared manager (plan then execute),
+        // skipping this image if the work fails so the rest of the PDF still renders.
+        let manager = &config.options.attachment_manager;
+        let handled = manager
+            .plan(msg, &attachment, config)
+            .and_then(|plan| manager.execute(plan, msg, &mut attachment, config));
+        if let Err(why) = handled {
             eprintln!(
                 "Skipping PDF image attachment rowid={} for message rowid={}: {why}",
                 attachment.rowid, msg.rowid

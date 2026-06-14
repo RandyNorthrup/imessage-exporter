@@ -1,5 +1,5 @@
 /*!
- These are the link previews that iMessage generates when sending locations or points of interest from the Maps app.
+ Maps link previews stored in URL balloon payloads.
 */
 
 use plist::Value;
@@ -15,32 +15,31 @@ use crate::{
 /// Representation of Apple's [`CLPlacemark`](https://developer.apple.com/documentation/corelocation/clplacemark) object
 #[derive(Debug, PartialEq, Eq, Default)]
 pub struct Placemark<'a> {
-    /// The name of the placemark
+    /// Placemark name.
     pub name: Option<&'a str>,
-    /// The full formatted address associated with the placemark
+    /// Formatted address.
     pub address: Option<&'a str>,
-    /// The state or province associated with the placemark
+    /// State or province.
     pub state: Option<&'a str>,
-    /// The city associated with the placemark
+    /// City.
     pub city: Option<&'a str>,
-    /// The abbreviated country or region name
+    /// ISO country or region code.
     pub iso_country_code: Option<&'a str>,
-    /// The postal code associated with the placemark
+    /// Postal code.
     pub postal_code: Option<&'a str>,
-    /// The name of the country or region associated with the placemark
+    /// Country or region name.
     pub country: Option<&'a str>,
-    /// The street associated with the placemark
+    /// Street.
     pub street: Option<&'a str>,
-    /// Additional administrative area information for the placemark
+    /// Sub-administrative area.
     pub sub_administrative_area: Option<&'a str>,
-    /// Additional city-level information for the placemark
+    /// Sub-locality.
     pub sub_locality: Option<&'a str>,
 }
 
 impl<'a> Placemark<'a> {
-    /// Create a Placemark from a `specialization2` payload
+    /// Parse a placemark from a `specialization2` payload.
     fn new(payload: &'a Value) -> Result<Self, PlistParseError> {
-        // Parse out the address components dict
         let address_components = payload
             .as_dictionary()
             .ok_or_else(|| {
@@ -73,20 +72,20 @@ impl<'a> Placemark<'a> {
 /// `com.apple.messages.URLBalloonProvider` but for the Maps app
 #[derive(Debug, PartialEq, Eq)]
 pub struct PlacemarkMessage<'a> {
-    /// The URL that ended up serving content, after all redirects
+    /// URL that served the preview content.
     pub url: Option<&'a str>,
-    /// The original url, before any redirects
+    /// Original URL before redirects.
     pub original_url: Option<&'a str>,
-    /// The full street address of the location
+    /// Location display name.
     pub place_name: Option<&'a str>,
-    /// [Placemark] data for the specified location
+    /// Placemark data for the location.
     pub placemark: Placemark<'a>,
 }
 
 impl<'a> BalloonProvider<'a> for PlacemarkMessage<'a> {
     fn from_map(payload: &'a Value) -> Result<Self, PlistParseError> {
         if let Ok((body, placemark)) = rich_link_metadata_and_nested(payload, "specialization2") {
-            // Ensure the message is a placemark
+            // Placemark payloads carry an address.
             if get_string_from_dict(placemark, "address").is_none() {
                 return Err(PlistParseError::WrongMessageType);
             }

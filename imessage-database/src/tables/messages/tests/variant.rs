@@ -46,6 +46,16 @@ mod tests {
     }
 
     #[test]
+    fn test_built_in_app_business() {
+        let mut m = Message::blank();
+        m.associated_message_type = Some(0);
+        m.balloon_bundle_id = Some(
+            "com.apple.messages.MSMessageExtensionBalloonPlugin:XXX:com.apple.icloud.apps.messages.business.extension".to_string(),
+        );
+        assert!(matches!(m.variant(), Variant::App(CustomBalloon::Business)));
+    }
+
+    #[test]
     fn test_tapback_added_heart() {
         let mut m = Message::blank();
         m.associated_message_type = Some(2000);

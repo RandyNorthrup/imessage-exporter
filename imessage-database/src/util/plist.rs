@@ -1,5 +1,5 @@
 /*!
- Contains logic and data structures used to parse and deserialize [`NSKeyedArchiver`](https://developer.apple.com/documentation/foundation/nskeyedarchiver) property list files into native Rust data structures.
+ Helpers for reading message property-list payloads.
 
  The main entry point is [`parse_ns_keyed_archiver()`]. For normal property lists, use [`plist_as_dictionary()`].
 
@@ -26,9 +26,13 @@ use plist::{Dictionary, Value};
 
 use crate::error::plist::PlistParseError;
 
-/// Deserialize a message's `payload_data` BLOB in the [`NSKeyedArchiver`](https://developer.apple.com/documentation/foundation/nskeyedarchiver) format to a [`Value`]
-/// that follows the references in the XML document's UID pointers. First, we find the root of the
-/// document, then walk the structure, promoting values to the places where their pointers are stored.
+/// Maximum depth of UID-reference resolution before bailing out.
+const MAX_UID_DEPTH: usize = 256;
+
+/// Deserialize an `NSKeyedArchiver` property list by resolving UID references.
+///
+/// The archive stores objects in `$objects` and points `$top.root` at the root
+/// object. This walks those references and returns the reconstructed value.
 ///
 /// For example, a document with a root pointing to some `XML` like
 ///
@@ -45,7 +49,7 @@ use crate::error::plist::PlistParseError;
 /// </array>
 /// ```
 ///
-/// Will be parsed into a dictionary that looks like:
+/// parses into a dictionary that looks like:
 ///
 /// ```json
 /// {
@@ -70,30 +74,20 @@ pub fn parse_ns_keyed_archiver(plist: &Value) -> Result<Value, PlistParseError> 
     // Index of root object
     let root = extract_uid_key(extract_dictionary(body, "$top")?, "root")?;
 
-    follow_uid(objects, root, None, None)
+    follow_uid(objects, root, None, None, 0)
 }
 
-/// Recursively follows pointers in an `NSKeyedArchiver` format, promoting the values
-/// to the positions where the pointers live
-///
-/// # Parameters
-///
-/// * `objects` - The array of objects from the `$objects` key in the `NSKeyedArchiver` format
-/// * `root` - The index into the `objects` array to resolve the current object
-/// * `parent` - Optional reference to the parent object in the recursion chain. Used when
-///   processing dictionary values to provide context for key generation and relative references.
-///   For example, when processing a dictionary entry like `{key: uid_pointer}`, the parent
-///   would be the [`Value`] representing the key itself.
-/// * `item` - Optional reference to a specific item to process instead of looking up `root`
-///   in the `objects` array. This is used when recursing into sub-objects that are already
-///   resolved, such as when processing array elements or dictionary values that don't
-///   contain `UID` pointers.
+/// Resolve one archived object and any UID references it contains.
 fn follow_uid<'a>(
     objects: &'a [Value],
     root: usize,
     parent: Option<&'a Value>,
     item: Option<&'a Value>,
+    depth: usize,
 ) -> Result<Value, PlistParseError> {
+    if depth >= MAX_UID_DEPTH {
+        return Err(PlistParseError::RecursionLimit);
+    }
     let item = match item {
         Some(item) => item,
         None => objects
@@ -106,7 +100,13 @@ fn follow_uid<'a>(
             let mut array = vec![];
             for item in arr {
                 if let Some(idx) = item.as_uid() {
-                    array.push(follow_uid(objects, idx.get() as usize, parent, None)?);
+                    array.push(follow_uid(
+                        objects,
+                        idx.get() as usize,
+                        parent,
+                        None,
+                        depth + 1,
+                    )?);
                 }
             }
             Ok(plist::Value::Array(array))
@@ -120,7 +120,7 @@ fn follow_uid<'a>(
                 {
                     dictionary.insert(
                         value_to_key_string(p),
-                        follow_uid(objects, idx.get() as usize, Some(p), None)?,
+                        follow_uid(objects, idx.get() as usize, Some(p), None, depth + 1)?,
                     );
                 }
             }
@@ -140,8 +140,8 @@ fn follow_uid<'a>(
                 for idx in 0..keys.len() {
                     let key_index = extract_uid_idx(keys, idx)?;
                     let value_index = extract_uid_idx(values, idx)?;
-                    let key = follow_uid(objects, key_index, None, None)?;
-                    let value = follow_uid(objects, value_index, Some(&key), None)?;
+                    let key = follow_uid(objects, key_index, None, None, depth + 1)?;
+                    let value = follow_uid(objects, value_index, Some(&key), None, depth + 1)?;
 
                     dictionary.insert(value_to_key_string(&key), value);
                 }
@@ -158,26 +158,32 @@ fn follow_uid<'a>(
                         let key_value = Value::String(key.clone());
                         dictionary.insert(
                             key.clone(),
-                            follow_uid(objects, idx.get() as usize, Some(&key_value), None)?,
+                            follow_uid(
+                                objects,
+                                idx.get() as usize,
+                                Some(&key_value),
+                                None,
+                                depth + 1,
+                            )?,
                         );
                     }
                     // If the value is not a pointer, try and follow the data itself
                     else if let Some(p) = parent {
                         dictionary.insert(
                             value_to_key_string(p),
-                            follow_uid(objects, root, Some(p), Some(val))?,
+                            follow_uid(objects, root, Some(p), Some(val), depth + 1)?,
                         );
                     }
                 }
             }
             Ok(plist::Value::Dictionary(dictionary))
         }
-        Value::Uid(uid) => follow_uid(objects, uid.get() as usize, None, None),
+        Value::Uid(uid) => follow_uid(objects, uid.get() as usize, None, None, depth + 1),
         _ => Ok(item.to_owned()),
     }
 }
 
-/// Helper function to convert a [`Value`] to a string representation for use as dictionary key
+/// Convert a plist value into a dictionary key.
 fn value_to_key_string(v: &Value) -> String {
     match v {
         Value::String(s) => s.clone(),
@@ -224,7 +230,7 @@ pub fn rich_link_metadata_and_nested<'a>(
     Ok((base, nested))
 }
 
-/// Extract a dictionary from a specific key in a collection
+/// Extract a dictionary from a collection key.
 pub fn extract_dictionary<'a>(
     body: &'a Dictionary,
     key: &str,
@@ -235,7 +241,7 @@ pub fn extract_dictionary<'a>(
         .ok_or_else(|| PlistParseError::InvalidType(key.to_string(), "dictionary".to_string()))
 }
 
-/// Extract an array from a specific key in a collection
+/// Extract an array from a collection key.
 pub fn extract_array_key<'a>(
     body: &'a Dictionary,
     key: &str,
@@ -246,7 +252,7 @@ pub fn extract_array_key<'a>(
         .ok_or_else(|| PlistParseError::InvalidType(key.to_string(), "array".to_string()))
 }
 
-/// Extract a Uid from a specific key in a collection
+/// Extract a `UID` from a collection key.
 fn extract_uid_key(body: &Dictionary, key: &str) -> Result<usize, PlistParseError> {
     Ok(body
         .get(key)
@@ -256,7 +262,7 @@ fn extract_uid_key(body: &Dictionary, key: &str) -> Result<usize, PlistParseErro
         .get() as usize)
 }
 
-/// Extract bytes from a specific key in a collection
+/// Extract bytes from a collection key.
 pub fn extract_bytes_key<'a>(body: &'a Dictionary, key: &str) -> Result<&'a [u8], PlistParseError> {
     body.get(key)
         .ok_or_else(|| PlistParseError::MissingKey(key.to_string()))?
@@ -264,7 +270,7 @@ pub fn extract_bytes_key<'a>(body: &'a Dictionary, key: &str) -> Result<&'a [u8]
         .ok_or_else(|| PlistParseError::InvalidType(key.to_string(), "data".to_string()))
 }
 
-/// Extract a real value as an `i64` from a specific key in a collection
+/// Extract a real value from a collection key and coerce it to `i64`.
 pub fn extract_int_key(body: &Dictionary, key: &str) -> Result<i64, PlistParseError> {
     Ok(body
         .get(key)
@@ -274,7 +280,7 @@ pub fn extract_int_key(body: &Dictionary, key: &str) -> Result<i64, PlistParseEr
         as i64)
 }
 
-/// Extract an &str from a specific key in a collection
+/// Extract a string slice from a collection key.
 pub fn extract_string_key<'a>(body: &'a Dictionary, key: &str) -> Result<&'a str, PlistParseError> {
     body.get(key)
         .ok_or_else(|| PlistParseError::MissingKey(key.to_string()))?
@@ -282,7 +288,7 @@ pub fn extract_string_key<'a>(body: &'a Dictionary, key: &str) -> Result<&'a str
         .ok_or_else(|| PlistParseError::InvalidType(key.to_string(), "string".to_string()))
 }
 
-/// Extract a Uid from a specific index in a collection
+/// Extract a UID from a collection index.
 fn extract_uid_idx(body: &[Value], idx: usize) -> Result<usize, PlistParseError> {
     Ok(body
         .get(idx)
@@ -292,7 +298,7 @@ fn extract_uid_idx(body: &[Value], idx: usize) -> Result<usize, PlistParseError>
         .get() as usize)
 }
 
-/// Extract a dictionary from a specific index in a collection
+/// Extract a dictionary from a collection index.
 pub fn extract_dict_idx(body: &[Value], idx: usize) -> Result<&Dictionary, PlistParseError> {
     body.get(idx)
         .ok_or(PlistParseError::NoValueAtIndex(idx))?
@@ -300,7 +306,7 @@ pub fn extract_dict_idx(body: &[Value], idx: usize) -> Result<&Dictionary, Plist
         .ok_or_else(|| PlistParseError::InvalidTypeIndex(idx, "dictionary".to_string()))
 }
 
-/// Extract a string from a key-value pair that looks like `{key: String("value")}`
+/// Extract a non-empty string from `{key: String("value")}`.
 #[must_use]
 pub fn get_string_from_dict<'a>(payload: &'a Value, key: &'a str) -> Option<&'a str> {
     payload
@@ -310,25 +316,31 @@ pub fn get_string_from_dict<'a>(payload: &'a Value, key: &'a str) -> Option<&'a 
         .filter(|s| !s.is_empty())
 }
 
-/// Extract an owned string from a key-value pair that looks like `{key: String("value")}`
+/// Extract an owned non-empty string from `{key: String("value")}`.
 #[must_use]
 pub fn get_owned_string_from_dict<'a>(payload: &'a Value, key: &'a str) -> Option<String> {
     get_string_from_dict(payload, key).map(String::from)
 }
 
-/// Extract a value from a key-value pair that looks like `{key: val}`
+/// Extract a value from `{key: value}`.
 #[must_use]
 pub fn get_value_from_dict<'a>(payload: &'a Value, key: &'a str) -> Option<&'a Value> {
     payload.as_dictionary()?.get(key)
 }
 
-/// Extract a bool from a key-value pair that looks like `{key: true}`
+/// Extract a boolean from `{key: true}`.
 #[must_use]
 pub fn get_bool_from_dict<'a>(payload: &'a Value, key: &'a str) -> Option<bool> {
     payload.as_dictionary()?.get(key)?.as_boolean()
 }
 
-/// Extract a string from a key-value pair that looks like `{key: {key: String("value")}}`
+/// Extract a byte slice from `{key: Data(...)}`.
+#[must_use]
+pub fn get_data_from_dict<'a>(payload: &'a Value, key: &'a str) -> Option<&'a [u8]> {
+    payload.as_dictionary()?.get(key)?.as_data()
+}
+
+/// Extract a non-empty string from `{key: {key: String("value")}}`.
 #[must_use]
 pub fn get_string_from_nested_dict<'a>(payload: &'a Value, key: &'a str) -> Option<&'a str> {
     payload
@@ -340,7 +352,7 @@ pub fn get_string_from_nested_dict<'a>(payload: &'a Value, key: &'a str) -> Opti
         .filter(|s| !s.is_empty())
 }
 
-/// Extract a float from a key-value pair that looks like `{key: {key: 1.2}}`
+/// Extract a float from `{key: {key: 1.2}}`.
 #[must_use]
 pub fn get_float_from_nested_dict<'a>(payload: &'a Value, key: &'a str) -> Option<f64> {
     payload
@@ -349,4 +361,61 @@ pub fn get_float_from_nested_dict<'a>(payload: &'a Value, key: &'a str) -> Optio
         .as_dictionary()?
         .get(key)?
         .as_real()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use plist::Uid;
+
+    /// Build a plist dictionary from key/value pairs.
+    fn dict(pairs: Vec<(&str, Value)>) -> Value {
+        let mut dictionary = Dictionary::new();
+        for (key, value) in pairs {
+            dictionary.insert(key.to_string(), value);
+        }
+        Value::Dictionary(dictionary)
+    }
+
+    #[test]
+    fn resolves_simple_archive() {
+        // `$top.root` -> `$objects[1]` == "hello"
+        let archive = dict(vec![
+            (
+                "$objects",
+                Value::Array(vec![
+                    Value::String("$null".to_string()),
+                    Value::String("hello".to_string()),
+                ]),
+            ),
+            ("$top", dict(vec![("root", Value::Uid(Uid::new(1)))])),
+        ]);
+
+        assert_eq!(
+            parse_ns_keyed_archiver(&archive).unwrap(),
+            Value::String("hello".to_string())
+        );
+    }
+
+    #[test]
+    fn cyclic_uid_reference_is_rejected_not_overflowed() {
+        // `$objects[1]` points at itself and `$top.root` points at index 1. Without
+        // a depth bound this recurses forever and aborts the process via stack
+        // overflow; the bound converts it into a recoverable error instead.
+        let archive = dict(vec![
+            (
+                "$objects",
+                Value::Array(vec![
+                    Value::String("$null".to_string()),
+                    Value::Uid(Uid::new(1)),
+                ]),
+            ),
+            ("$top", dict(vec![("root", Value::Uid(Uid::new(1)))])),
+        ]);
+
+        assert!(matches!(
+            parse_ns_keyed_archiver(&archive),
+            Err(PlistParseError::RecursionLimit)
+        ));
+    }
 }

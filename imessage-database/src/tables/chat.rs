@@ -1,5 +1,5 @@
 /*!
- This module represents common (but not all) columns in the `chat` table.
+ Chat table rows and chat metadata helpers.
 */
 
 use std::collections::HashMap;
@@ -20,24 +20,23 @@ use crate::{
 };
 
 // MARK: Chat Props
-/// Chat properties are stored as a `plist` in the database
-/// This represents the metadata for a chatroom
+/// Metadata stored in the `chat.properties` plist.
 #[derive(Debug, PartialEq, Eq)]
 pub struct Properties {
-    /// Whether the chat has read receipts enabled
+    /// Whether read receipts are enabled for the chat.
     pub read_receipts_enabled: bool,
-    /// The most recent message in the chat
+    /// Most recent message GUID recorded for the chat.
     pub last_message_guid: Option<String>,
-    /// Whether the chat was forced to use SMS/RCS instead of iMessage
+    /// Whether Messages forced SMS/RCS instead of iMessage.
     pub forced_sms: bool,
-    /// GUID of the group photo, if it exists in the attachments table
+    /// Group photo attachment GUID.
     pub group_photo_guid: Option<String>,
-    /// Whether the chat has a custom background image
+    /// Whether the chat has a custom background.
     pub has_chat_background: bool,
 }
 
 impl Properties {
-    /// Create a new `Properties` given a `plist` blob
+    /// Parse chat properties from a plist value.
     pub(self) fn from_plist(plist: &Value) -> Result<Self, PlistParseError> {
         Ok(Self {
             read_receipts_enabled: get_bool_from_dict(plist, "EnableReadReceiptForChat")
@@ -54,16 +53,16 @@ impl Properties {
 }
 
 // MARK: Chat Struct
-/// Represents a single row in the `chat` table.
+/// Row from the `chat` table.
 #[derive(Debug)]
 pub struct Chat {
-    /// The unique identifier for the chat in the database
+    /// Chat row ID.
     pub rowid: i32,
-    /// The identifier for the chat, typically a phone number, email, or group chat ID
+    /// Phone number, email, or group chat identifier.
     pub chat_identifier: String,
-    /// The service the chat used, i.e. iMessage, SMS, IRC, etc.
+    /// Service name stored for the chat.
     pub service_name: Option<String>,
-    /// Optional custom name created for the chat
+    /// User-provided chat display name.
     pub display_name: Option<String>,
 }
 
@@ -87,10 +86,10 @@ impl Table for Chat {
 impl Cacheable for Chat {
     type K = i32;
     type V = Chat;
-    /// Generate a hashmap containing each chatroom's ID pointing to the chatroom's metadata.
+    /// Cache chat rows by row ID.
     ///
-    /// These chatroom ID's contain duplicates and must be deduped later once we have all of
-    /// the participants parsed out. On its own this data is not useful.
+    /// Chat row IDs can represent duplicate conversations; deduplication happens
+    /// after participant handles are loaded.
     ///
     /// # Example:
     ///
@@ -117,7 +116,7 @@ impl Cacheable for Chat {
 }
 
 impl Chat {
-    /// Generate a name for a chat, falling back to the default if a custom one is not set
+    /// Return the display name, falling back to the chat identifier.
     #[must_use]
     pub fn name(&self) -> &str {
         match self.display_name() {
@@ -126,7 +125,7 @@ impl Chat {
         }
     }
 
-    /// Get the current display name for the chat, if it exists.
+    /// Return the non-empty custom display name.
     #[must_use]
     pub fn display_name(&self) -> Option<&str> {
         match &self.display_name {
@@ -140,16 +139,15 @@ impl Chat {
         }
     }
 
-    /// Get the service used by the chat, i.e. iMessage, SMS, IRC, etc.
+    /// Return the chat service as a [`Service`].
     #[must_use]
     pub fn service(&'_ self) -> Service<'_> {
         Service::from_name(self.service_name.as_deref())
     }
 
-    /// Get the [`Properties`] for the chat, if they exist
+    /// Parse [`Properties`] from the chat's plist blob.
     ///
-    /// Calling this hits the database, so it is expensive and should
-    /// only get invoked when needed.
+    /// Calling this reads a BLOB from the database.
     #[must_use]
     pub fn properties(&self, db: &Connection) -> Option<Properties> {
         match Value::from_reader(self.get_blob(db, CHAT, PROPERTIES, self.rowid.into())?) {

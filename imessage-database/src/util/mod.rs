@@ -3,6 +3,7 @@
 */
 
 pub mod bundle_id;
+pub mod data_detected;
 pub mod dates;
 pub mod dirs;
 pub mod platform;

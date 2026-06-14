@@ -2,7 +2,7 @@ use std::{fmt::Display, path::PathBuf};
 
 use crate::app::error::RuntimeError;
 
-/// Defines failures caused by attachment conversion and resolution
+/// Attachment conversion and resolution failure.
 #[derive(Debug)]
 pub enum ConversionError {
     /// The attachment row's database `filename` column was NULL.

@@ -3,10 +3,11 @@ use std::collections::HashMap;
 use rusqlite::Connection;
 
 use imessage_database::{
-    error::table::TableError,
     message_types::expressives::Expressive,
     tables::{attachment::Attachment, messages::Message},
 };
+
+use crate::app::error::RuntimeError;
 
 /// Per-message data resolved up front so exporters can iterate over a
 /// message's parts without re-issuing the same DB queries or repeating the
@@ -22,7 +23,7 @@ pub(crate) struct MessageContext<'a> {
 }
 
 impl<'a> MessageContext<'a> {
-    pub fn resolve(message: &'a Message, db: &Connection) -> Result<Self, TableError> {
+    pub fn resolve(message: &'a Message, db: &Connection) -> Result<Self, RuntimeError> {
         Ok(Self {
             attachments: Attachment::from_message(db, message)?,
             replies_map: message.get_replies(db)?,
