@@ -27,12 +27,15 @@ This tool targets the current latest public release for Messages.app. It may wor
 ## Desktop GUI features
 
 - Opens macOS `chat.db` files, iOS backup folders, and loose `sms.db` files
+- Scans the standard macOS and Windows backup locations to list available iOS backups to pick from
+- Opens encrypted iOS backups using the backup password (decrypted with [`crabapple`](https://github.com/ReagentX/crabapple))
 - Lists conversations with selection, search, and message counts
 - Shows an in-app message preview and can open an HTML preview in the default browser
 - Exports with the same shared `txt`, `html`, and `pdf` pipeline as the command-line binary
 - Can cancel in-progress exports
 - Confirms before exporting every conversation when no conversations are selected
 - Loads, filters, and exports iOS Phone/FaceTime call logs (to CSV, HTML, or PDF) when Apple's call-history database is present; the call-log view and export use the same conversation and date filters as the message preview
+- Remembers your options between sessions, stored beside the app as portable settings
 
 ## Supported Message Features
 
