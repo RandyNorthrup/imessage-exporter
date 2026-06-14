@@ -24,6 +24,7 @@ use crate::{
     model::*,
     settings,
     theme::{self, layout, progress, timing},
+    webview,
 };
 
 /// Maximum number of messages pulled into the in-app preview.
@@ -157,6 +158,14 @@ pub struct App {
     preview_total: i64,
     preview_note: String,
 
+    // Embedded HTML preview (native webview, macOS/Windows)
+    webview: Option<webview::PreviewWebview>,
+    webview_attempted: bool,
+    preview_rect: Option<egui::Rect>,
+    pending_preview_file: Option<PathBuf>,
+    previewed_conversation: Option<i32>,
+    collapse_export: bool,
+
     // Call logs
     call_logs: Vec<CallLogEntry>,
     call_log_total: i64,
@@ -247,6 +256,12 @@ impl App {
             preview: Vec::new(),
             preview_total: 0,
             preview_note: String::new(),
+            webview: None,
+            webview_attempted: false,
+            preview_rect: None,
+            pending_preview_file: None,
+            previewed_conversation: None,
+            collapse_export: false,
             call_logs: Vec::new(),
             call_log_total: 0,
             call_log_note: String::new(),
@@ -415,6 +430,18 @@ impl App {
                     self.busy = false;
                     self.error = Some(e.clone());
                     self.push_log(format!("HTML preview failed: {e}"));
+                }
+                Event::WebviewPreviewReady(path) => {
+                    self.busy = false;
+                    self.busy_label.clear();
+                    self.pending_preview_file = Some(path);
+                    self.error = None;
+                    self.settings_msg = None;
+                }
+                Event::WebviewPreviewFailed(e) => {
+                    self.busy = false;
+                    self.error = Some(e.clone());
+                    self.push_log(format!("Preview failed: {e}"));
                 }
                 Event::CallLogsLoaded {
                     entries,
@@ -594,19 +621,53 @@ impl App {
         self.send_command(Command::Open(params), "open source");
     }
 
-    fn do_preview(&mut self) {
-        match self.build_filters() {
-            Ok(filters) => {
-                self.start_busy("Loading preview ...");
-                self.send_command(
-                    Command::Preview {
-                        filters,
-                        limit: PREVIEW_LIMIT,
-                    },
-                    "load preview",
-                );
+    /// Parse the optional start/end date filters into iMessage timestamps.
+    fn parse_date_bounds(&self) -> Result<(Option<i64>, Option<i64>), String> {
+        let start_ns = if self.start_enabled {
+            Some(parse_local_timestamp(&self.start_date, &self.start_time)?)
+        } else {
+            None
+        };
+        let end_ns = if self.end_enabled {
+            Some(parse_local_timestamp(&self.end_date, &self.end_time)?)
+        } else {
+            None
+        };
+        Ok((start_ns, end_ns))
+    }
+
+    /// Auto-load the preview for a single conversation (clicked in the list).
+    /// Uses the embedded webview where supported, otherwise the bubble preview.
+    fn do_preview_conversation(&mut self, id: i32) {
+        let Some(conv) = self.conversations.iter().find(|c| c.id == id) else {
+            return;
+        };
+        let raw_chat_ids = conv.raw_chat_ids.clone();
+        let (start_ns, end_ns) = match self.parse_date_bounds() {
+            Ok(bounds) => bounds,
+            Err(why) => {
+                self.error = Some(why);
+                return;
             }
-            Err(e) => self.error = Some(e),
+        };
+        let filters = Filters {
+            selected_raw_chat_ids: raw_chat_ids,
+            conversation_filter: None,
+            start_ns,
+            end_ns,
+        };
+
+        self.start_busy("Rendering preview ...");
+        if webview::SUPPORTED {
+            self.send_command(Command::WebviewPreview { filters }, "render preview");
+        } else {
+            self.send_command(
+                Command::Preview {
+                    filters,
+                    limit: PREVIEW_LIMIT,
+                },
+                "load preview",
+            );
         }
     }
 
@@ -1048,18 +1109,38 @@ impl App {
                         if self.sort_by_count {
                             visible.sort_by_key(|item| Reverse(item.3));
                         }
+                        let mut preview_click: Option<i32> = None;
                         for (id, title, participants, count) in visible {
                             let mut checked = self.selected.contains(&id);
-                            let label = format!("{title}  -  {count}");
-                            let resp = theme::checkbox(ui, &mut checked, label);
-                            if !participants.is_empty() && participants != title {
-                                resp.on_hover_text(format!("{participants}\n{count} messages"));
-                            }
+                            let is_active = self.previewed_conversation == Some(id);
+                            // Checkbox (export selection) top-aligned to the first
+                            // line; clicking the name loads that conversation's
+                            // preview.
+                            ui.horizontal_top(|ui| {
+                                theme::checkbox(ui, &mut checked, "");
+                                let mut text = egui::RichText::new(format!("{title}  -  {count}"));
+                                if is_active {
+                                    text = text.strong();
+                                }
+                                let resp = ui
+                                    .add(egui::Label::new(text).sense(egui::Sense::click()).wrap())
+                                    .on_hover_cursor(egui::CursorIcon::PointingHand);
+                                if resp.clicked() {
+                                    preview_click = Some(id);
+                                }
+                                if !participants.is_empty() && participants != title {
+                                    resp.on_hover_text(format!("{participants}\n{count} messages"));
+                                }
+                            });
                             if checked {
                                 self.selected.insert(id);
                             } else {
                                 self.selected.remove(&id);
                             }
+                        }
+                        if let Some(id) = preview_click {
+                            self.previewed_conversation = Some(id);
+                            self.do_preview_conversation(id);
                         }
                     });
 
@@ -1433,23 +1514,37 @@ impl App {
                 self.active_tab = ActiveTab::CallLogs;
             }
 
-            // Preview lives on the right of the tab bar so it is always reachable.
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                let enabled = self.opened && !self.busy;
-                if theme::add_enabled_button(ui, enabled, "Preview")
-                    .on_hover_text("Load the current selection into the message preview")
-                    .clicked()
-                {
-                    self.active_tab = ActiveTab::Messages;
-                    self.do_preview();
-                }
-            });
+            // On the Messages tab, a toggle on the right collapses the export
+            // settings so the preview can use the full height.
+            if self.active_tab == ActiveTab::Messages {
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let (label, hint) = if self.collapse_export {
+                        ("Show settings", "Show the export settings")
+                    } else {
+                        (
+                            "Hide settings",
+                            "Collapse the export settings to enlarge the preview",
+                        )
+                    };
+                    if theme::add_button(ui, label).on_hover_text(hint).clicked() {
+                        self.collapse_export = !self.collapse_export;
+                    }
+                });
+            }
         });
         theme::inline_separator(ui);
         theme::gap(ui, layout::ROW_GAP);
     }
 
     fn messages_tab(&mut self, ui: &mut egui::Ui) {
+        if self.collapse_export {
+            // Settings collapsed: the preview takes the whole pane.
+            theme::fixed_height_area(ui, ui.available_height(), |ui| {
+                self.preview_contents(ui);
+            });
+            return;
+        }
+
         let (preview_height, _export_height) = theme::preview_export_heights(ui.available_height());
         theme::fixed_height_area(ui, preview_height, |ui| {
             self.preview_contents(ui);
@@ -1567,12 +1662,22 @@ impl App {
             }
         });
 
+        // On platforms with the embedded webview, reserve the remaining area and
+        // record its rect; `sync_webview` positions the native HTML preview there.
+        if webview::SUPPORTED {
+            let rect = ui.available_rect_before_wrap();
+            ui.allocate_rect(rect, egui::Sense::hover());
+            self.preview_rect = Some(rect);
+            return;
+        }
+
+        // Fallback for platforms without an embedded webview: egui bubble preview.
         theme::preview_tablet_area(ui, |ui| {
             if self.preview.is_empty() {
                 if self.opened {
                     theme::centered_preview_message(
                         ui,
-                        "Select conversations and/or a date range, then click Preview.",
+                        "Select conversations and/or a date range to preview.",
                     );
                 } else {
                     theme::centered_preview_message(
@@ -1592,6 +1697,36 @@ impl App {
                     });
             }
         });
+    }
+
+    /// Create (lazily), position, and show/hide the embedded HTML preview webview.
+    fn sync_webview(&mut self, ctx: &egui::Context, frame: &eframe::Frame) {
+        if !webview::SUPPORTED {
+            return;
+        }
+        if self.webview.is_none() && !self.webview_attempted {
+            self.webview_attempted = true;
+            self.webview = webview::PreviewWebview::create(frame);
+        }
+        let Some(view) = &self.webview else {
+            return;
+        };
+
+        if let Some(path) = self.pending_preview_file.take() {
+            view.load_file(&path);
+        }
+
+        // The webview is a native overlay: only show it over the Messages preview
+        // pane, and hide it whenever a modal window could sit on top of it.
+        let modal_open =
+            self.show_backup_picker || self.show_export_all_confirm || self.show_activity_log;
+        match self.preview_rect {
+            Some(rect) if self.active_tab == ActiveTab::Messages && !modal_open => {
+                view.set_bounds(rect, ctx.pixels_per_point());
+                view.set_visible(true);
+            }
+            _ => view.set_visible(false),
+        }
     }
 }
 
@@ -2001,7 +2136,7 @@ fn one_line_status(text: &str) -> String {
 }
 
 impl eframe::App for App {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+    fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
         self.drain_events();
         if self
             .activity_log_close_requested
@@ -2009,6 +2144,9 @@ impl eframe::App for App {
         {
             self.show_activity_log = false;
         }
+
+        // Reset each frame; the messages tab records the live preview rect.
+        self.preview_rect = None;
 
         self.top_panel(ctx);
         self.bottom_status_bar(ctx);
@@ -2023,6 +2161,9 @@ impl eframe::App for App {
         if self.show_export_all_confirm {
             self.export_all_confirmation_window(ctx);
         }
+
+        // Position/refresh the embedded HTML preview over the preview pane.
+        self.sync_webview(ctx, frame);
 
         // Keep polling the backend channel while a long operation runs.
         if self.busy {

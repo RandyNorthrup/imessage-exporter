@@ -21,3 +21,4 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 imessage-database = { path = "../imessage-database" }
 imessage-exporter = { path = "../imessage-exporter" }
+wry = "0.55.1"

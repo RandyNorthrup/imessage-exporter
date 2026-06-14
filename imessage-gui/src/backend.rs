@@ -61,6 +61,11 @@ pub enum Command {
     HtmlPreview {
         filters: Filters,
     },
+    /// Render the HTML preview to a stable folder (copying attachments) for the
+    /// embedded webview, without opening a browser.
+    WebviewPreview {
+        filters: Filters,
+    },
     LoadCallLogs {
         filters: Filters,
         limit: usize,
@@ -105,6 +110,8 @@ pub enum Event {
     ExportFailed(String),
     HtmlPreviewReady(PathBuf),
     HtmlPreviewFailed(String),
+    WebviewPreviewReady(PathBuf),
+    WebviewPreviewFailed(String),
     CallLogsLoaded {
         entries: Vec<CallLogEntry>,
         total: i64,
@@ -153,6 +160,9 @@ fn backend_loop(cmd_rx: &Receiver<Command>, evt_tx: &Sender<Event>, ctx: &egui::
             } => handle_export(config.as_mut(), params, cancel_token, evt_tx, ctx),
             Command::HtmlPreview { filters } => {
                 handle_html_preview(config.as_mut(), &filters, evt_tx, ctx)
+            }
+            Command::WebviewPreview { filters } => {
+                handle_webview_preview(config.as_mut(), &filters, evt_tx, ctx)
             }
             Command::LoadCallLogs { filters, limit } => handle_load_call_logs(
                 config.as_ref(),
@@ -829,11 +839,74 @@ fn handle_html_preview(
         return;
     }
 
+    send(
+        evt_tx,
+        ctx,
+        Event::Status("Rendering HTML preview ...".into()),
+    );
+
+    match render_html_preview(config, filters, &dir, CopyMethod::Disabled) {
+        Ok(file) => {
+            if let Err(why) = open::that_detached(&file) {
+                send(
+                    evt_tx,
+                    ctx,
+                    Event::HtmlPreviewFailed(format!("Could not open preview: {why}")),
+                );
+            } else {
+                send(evt_tx, ctx, Event::HtmlPreviewReady(file));
+            }
+        }
+        Err(why) => send(evt_tx, ctx, Event::HtmlPreviewFailed(why)),
+    }
+}
+
+/// Render the HTML preview into a stable folder (copying attachments out of the
+/// backup so the webview can display/play them) for the embedded preview.
+fn handle_webview_preview(
+    config: Option<&mut Config>,
+    filters: &Filters,
+    evt_tx: &Sender<Event>,
+    ctx: &egui::Context,
+) {
+    let Some(config) = config else {
+        send(
+            evt_tx,
+            ctx,
+            Event::WebviewPreviewFailed("Open a backup before previewing.".into()),
+        );
+        return;
+    };
+
+    // Reuse one folder so the webview can reload in place; clear stale output and
+    // copied attachments first.
+    let dir = std::env::temp_dir().join("imessage-gui-webview-preview");
+    let _ = std::fs::remove_dir_all(&dir);
+
+    send(evt_tx, ctx, Event::Status("Rendering preview ...".into()));
+
+    match render_html_preview(config, filters, &dir, CopyMethod::Clone) {
+        Ok(file) => send(evt_tx, ctx, Event::WebviewPreviewReady(file)),
+        Err(why) => send(evt_tx, ctx, Event::WebviewPreviewFailed(why)),
+    }
+}
+
+/// Render the current selection to HTML in `dir` and return the conversation
+/// file (the largest `.html`). Shared by the browser and webview previews.
+fn render_html_preview(
+    config: &mut Config,
+    filters: &Filters,
+    dir: &Path,
+    copy_method: CopyMethod,
+) -> Result<PathBuf, String> {
+    std::fs::create_dir_all(dir)
+        .map_err(|why| format!("Could not create preview folder: {why}"))?;
+
     let preview_params = ExportParams {
         filters: filters.clone(),
         format: FormatChoice::Html,
-        export_path: dir.clone(),
-        copy_method: CopyMethod::Disabled,
+        export_path: dir.to_path_buf(),
+        copy_method,
         no_lazy: true,
         custom_name: config.options.custom_name.clone(),
         use_caller_id: config.options.use_caller_id,
@@ -845,49 +918,12 @@ fn handle_html_preview(
     config.progress_callback = None;
     config.cancel_callback = None;
 
-    send(
-        evt_tx,
-        ctx,
-        Event::Status("Rendering HTML preview ...".into()),
-    );
+    config.start().map_err(|why| format!("{why}"))?;
 
-    if let Err(why) = config.start() {
-        send(evt_tx, ctx, Event::HtmlPreviewFailed(format!("{why}")));
-        return;
-    }
-
-    match largest_html_file(&dir) {
-        Ok(Some(file)) => {
-            let file = match std::fs::canonicalize(&file) {
-                Ok(file) => file,
-                Err(why) => {
-                    send(
-                        evt_tx,
-                        ctx,
-                        Event::HtmlPreviewFailed(format!(
-                            "Could not resolve preview file {}: {why}",
-                            file.display()
-                        )),
-                    );
-                    return;
-                }
-            };
-            if let Err(why) = open::that_detached(&file) {
-                send(
-                    evt_tx,
-                    ctx,
-                    Event::HtmlPreviewFailed(format!("Could not open preview: {why}")),
-                );
-            } else {
-                send(evt_tx, ctx, Event::HtmlPreviewReady(file));
-            }
-        }
-        Ok(None) => send(
-            evt_tx,
-            ctx,
-            Event::HtmlPreviewFailed("No messages matched the current filters.".into()),
-        ),
-        Err(why) => send(evt_tx, ctx, Event::HtmlPreviewFailed(why)),
+    match largest_html_file(dir)? {
+        Some(file) => std::fs::canonicalize(&file)
+            .map_err(|why| format!("Could not resolve preview file {}: {why}", file.display())),
+        None => Err("No messages matched the current filters.".into()),
     }
 }
 

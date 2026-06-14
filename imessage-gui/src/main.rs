@@ -6,6 +6,7 @@ mod backend;
 mod model;
 mod settings;
 mod theme;
+mod webview;
 
 use eframe::egui;
 
