@@ -38,6 +38,7 @@ use crate::app::{
     runtime::Config,
     sanitizers::sanitize_filename,
 };
+use crate::exporters::preview::Preview;
 
 #[derive(Clone, Debug)]
 pub struct PreviewMessage {
@@ -51,6 +52,9 @@ pub struct PreviewMessage {
     pub attachments: Vec<PreviewAttachment>,
     /// Short badges such as attachment/reply/edit markers.
     pub annotations: Vec<String>,
+    /// Whether this is a system announcement (e.g. a group rename), which
+    /// front-ends render as a centered system note rather than a sender bubble.
+    pub is_announcement: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -233,6 +237,11 @@ pub fn collect_messages(
     let mut statement = Message::stream_rows(db, qc)?;
     let mut out: Vec<PreviewMessage> = Vec::new();
 
+    // Render bodies through the shared Preview exporter so every feature (app
+    // balloons, Digital Touch, data detectors, edits, …) surfaces, not just raw
+    // text. Built once and reused across the whole stream.
+    let preview = Preview::new(config)?;
+
     for row in Message::rows(&mut statement, [])? {
         config.check_cancelled()?;
         let mut msg = row?;
@@ -262,14 +271,17 @@ pub fn collect_messages(
             Vec::new()
         };
 
+        let rendered = preview.render(&msg)?;
+
         out.push(PreviewMessage {
             is_from_me: msg.is_from_me,
             sender,
             timestamp,
-            text: preview_text(&msg),
+            text: rendered.body,
             attachment_count,
             attachments,
-            annotations: preview_annotations(&msg),
+            annotations: rendered.annotations,
+            is_announcement: msg.is_announcement(),
         });
 
         if out.len() >= limit {
@@ -395,42 +407,6 @@ fn is_pdf_image_candidate(attachment: &Attachment) -> bool {
             "gif" | "jpg" | "jpeg" | "png"
         )
     })
-}
-
-fn preview_text(msg: &Message) -> String {
-    let raw = msg.text.clone().unwrap_or_default();
-    let cleaned = raw.replace(['\u{FFFC}', '\u{FFFD}'], " ");
-    let cleaned = cleaned.trim();
-    if !cleaned.is_empty() {
-        return cleaned.to_string();
-    }
-    if msg.is_url() {
-        "Link".to_string()
-    } else {
-        String::new()
-    }
-}
-
-fn preview_annotations(msg: &Message) -> Vec<String> {
-    let mut annotations = Vec::new();
-    if msg.has_attachments() {
-        let n = msg.num_attachments;
-        annotations.push(format!("{n} attachment{}", if n == 1 { "" } else { "s" }));
-    }
-    if msg.is_reply() {
-        annotations.push("reply".to_string());
-    }
-    if msg.has_replies() {
-        let n = msg.num_replies;
-        annotations.push(format!("{n} repl{}", if n == 1 { "y" } else { "ies" }));
-    }
-    if msg.is_edited() {
-        annotations.push("edited".to_string());
-    }
-    if msg.is_expressive() {
-        annotations.push("effect".to_string());
-    }
-    annotations
 }
 
 fn mm(pt: f32) -> Mm {
@@ -1257,7 +1233,8 @@ mod tests {
             text: text.into(),
             attachment_count: 1,
             attachments: Vec::new(),
-            annotations: vec!["📎 1 attachment".into()],
+            annotations: vec!["1 attachment".into()],
+            is_announcement: false,
         }
     }
 

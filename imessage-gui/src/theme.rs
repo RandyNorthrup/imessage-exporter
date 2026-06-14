@@ -155,6 +155,74 @@ mod metric {
     pub const TABLET_SCREEN_RADIUS: f32 = 12.0;
 }
 
+/// Broad-coverage fallback fonts to load from the OS, by platform. These are
+/// outline (not bitmap/color) fonts so egui can rasterize them, and they cover
+/// the scripts, symbols, and punctuation that egui's bundled Latin font lacks
+/// (CJK, accents, currency/arrows/math, etc.). egui already bundles a monochrome
+/// emoji font (`NotoEmoji`), so common emoji render here in black and white;
+/// full-color emoji are an egui rendering limitation, and the "Open HTML
+/// preview" button renders them in the browser with full fidelity.
+fn fallback_font_files() -> &'static [&'static str] {
+    #[cfg(target_os = "macos")]
+    {
+        &[
+            "/System/Library/Fonts/Supplemental/Arial Unicode.ttf",
+            "/System/Library/Fonts/Apple Symbols.ttf",
+        ]
+    }
+    #[cfg(target_os = "windows")]
+    {
+        &[
+            "C:\\Windows\\Fonts\\seguisym.ttf",
+            "C:\\Windows\\Fonts\\seguiemj.ttf",
+            "C:\\Windows\\Fonts\\arialuni.ttf",
+        ]
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    {
+        &[
+            "/usr/share/fonts/truetype/noto/NotoSansSymbols2-Regular.ttf",
+            "/usr/share/fonts/opentype/noto/NotoSans-Regular.ttf",
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        ]
+    }
+}
+
+/// Load OS fallback fonts so the message preview renders the full range of
+/// message content (emoji, symbols, accents, CJK, …) rather than empty boxes.
+///
+/// Best-effort: any font that is missing or cannot be parsed is skipped. The
+/// loaded fonts are appended *after* egui's defaults, so Latin text keeps its
+/// default appearance and emoji still resolve to egui's bundled emoji font;
+/// these only fill in code points the defaults do not cover.
+pub fn install_fonts(ctx: &egui::Context) {
+    let mut fonts = egui::FontDefinitions::default();
+    let mut loaded: Vec<String> = Vec::new();
+
+    for path in fallback_font_files() {
+        let name = format!("fallback-{}", loaded.len());
+        if let Ok(bytes) = std::fs::read(path) {
+            fonts
+                .font_data
+                .insert(name.clone(), egui::FontData::from_owned(bytes));
+            loaded.push(name);
+        }
+    }
+
+    if loaded.is_empty() {
+        return;
+    }
+
+    for family in [egui::FontFamily::Proportional, egui::FontFamily::Monospace] {
+        let chain = fonts.families.entry(family).or_default();
+        for name in &loaded {
+            chain.push(name.clone());
+        }
+    }
+
+    ctx.set_fonts(fonts);
+}
+
 pub fn configure(ctx: &egui::Context) {
     let mut visuals = egui::Visuals::light();
 

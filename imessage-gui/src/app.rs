@@ -183,6 +183,9 @@ pub struct App {
 
 impl App {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
+        // Load OS fallback fonts first so the preview can render emoji, symbols,
+        // and non-Latin scripts that egui's bundled font does not cover.
+        theme::install_fonts(&cc.egui_ctx);
         theme::configure(&cc.egui_ctx);
 
         let (cmd_tx, evt_rx) = backend::spawn(cc.egui_ctx.clone());
@@ -1593,6 +1596,15 @@ impl App {
 }
 
 fn render_bubble(ui: &mut egui::Ui, m: &PreviewMessage) {
+    // Announcements (group renames, etc.) are conversation-wide events, not a
+    // sender's message, so render them as a centered system note.
+    if m.is_announcement {
+        ui.with_layout(egui::Layout::top_down(egui::Align::Center), |ui| {
+            ui.add(egui::Label::new(theme::small_muted_text(&m.text)).wrap());
+        });
+        return;
+    }
+
     let align = if m.is_from_me {
         egui::Align::Max
     } else {

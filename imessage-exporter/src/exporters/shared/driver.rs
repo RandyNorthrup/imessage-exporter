@@ -56,6 +56,21 @@ impl ExportState {
             pb: ExportProgress::new(pb_enabled, config.progress_callback.clone()),
         })
     }
+
+    /// State for read-only rendering (e.g. previews) that must not create files
+    /// in the user's export directory. The orphaned sink points at a throwaway
+    /// file in the system temp directory (it is never written for previews) and
+    /// the progress bar is disabled.
+    pub(crate) fn scratch() -> Result<Self, RuntimeError> {
+        let orphaned = std::env::temp_dir().join("imessage-exporter-preview-orphaned.txt");
+        let file = File::options().append(true).create(true).open(&orphaned)?;
+        Ok(Self {
+            files: HashMap::new(),
+            route: HashMap::new(),
+            orphaned: BufWriter::with_capacity(FILE_BUFFER_CAPACITY, file),
+            pb: ExportProgress::new(false, None),
+        })
+    }
 }
 
 /// Decode the message's body via [`Message::parse_body`] and apply it.
