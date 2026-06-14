@@ -45,6 +45,7 @@ pub const OPTION_CUSTOM_CONTACTS_DB_PATH: &str = "contacts-path";
 pub const OPTION_NO_PROGRESS: &str = "no-progress";
 pub const OPTION_CALL_LOGS: &str = "call-logs";
 pub const OPTION_CALL_LOG_LIMIT: &str = "call-log-limit";
+pub const OPTION_CALL_LOG_FORMAT: &str = "call-log-format";
 
 // Other CLI Text
 pub const SUPPORTED_FILE_TYPES: &str = "txt, html, pdf";
@@ -195,22 +196,36 @@ impl Options {
             )));
         }
 
-        // Anything in here requires `--format`
+        // Anything in here requires `--format` (it has no meaning for call-log export)
         if export_file_type.is_none() {
             let format_deps = [
                 (attachment_manager_type.is_some(), OPTION_ATTACHMENT_MANAGER),
                 (no_lazy, OPTION_DISABLE_LAZY_LOADING),
-                (start_date.is_some(), OPTION_START_DATE),
-                (end_date.is_some(), OPTION_END_DATE),
                 (custom_name.is_some(), OPTION_CUSTOM_NAME),
                 (use_caller_id, OPTION_USE_CALLER_ID),
-                (conversation_filter.is_some(), OPTION_CONVERSATION_FILTER),
             ];
             for (set, opt) in format_deps {
                 if set {
                     return Err(RuntimeError::InvalidOptions(format!(
                         "Option --{opt} is enabled, which requires --{OPTION_EXPORT_TYPE}"
                     )));
+                }
+            }
+
+            // Date and participant filters apply to both message exports and
+            // call-log exports, so they need one of those operations enabled.
+            if !export_call_logs {
+                let filter_deps = [
+                    (start_date.is_some(), OPTION_START_DATE),
+                    (end_date.is_some(), OPTION_END_DATE),
+                    (conversation_filter.is_some(), OPTION_CONVERSATION_FILTER),
+                ];
+                for (set, opt) in filter_deps {
+                    if set {
+                        return Err(RuntimeError::InvalidOptions(format!(
+                            "Option --{opt} is enabled, which requires --{OPTION_EXPORT_TYPE} or --{OPTION_CALL_LOGS}"
+                        )));
+                    }
                 }
             }
         }
@@ -581,7 +596,7 @@ fn get_command() -> Command {
         .arg(
             Arg::new(OPTION_CALL_LOGS)
                 .long(OPTION_CALL_LOGS)
-                .help("Export iOS Phone/FaceTime call history to call_logs.csv and exit\nRequires an iOS backup folder source.\n")
+                .help("Export iOS Phone/FaceTime call history and exit\nWrites call_logs.csv by default; use --call-log-format for html or pdf\nThe --start-date, --end-date, and --conversation-filter options also narrow call logs\nRequires an iOS backup folder source.\n")
                 .action(ArgAction::SetTrue)
                 .display_order(17),
         )
@@ -591,6 +606,14 @@ fn get_command() -> Command {
                 .help("Maximum number of call-history rows to export\nOnly valid with --call-logs. If omitted, all rows are exported.\n")
                 .display_order(18)
                 .value_name("rows"),
+        )
+        .arg(
+            Arg::new(OPTION_CALL_LOG_FORMAT)
+                .long(OPTION_CALL_LOG_FORMAT)
+                .help("File format for exported call history: csv, html, or pdf\nOnly valid with --call-logs. If omitted, the default is csv.\n")
+                .display_order(19)
+                .value_parser(["csv", "html", "pdf"])
+                .value_name("csv, html, pdf"),
         )
 }
 

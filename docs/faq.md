@@ -110,7 +110,7 @@ Messages that cannot be associated with any conversation are written to `orphane
 
 ## Can it export call logs?
 
-Yes, from iOS backup folders when Apple's call-history database is present. Use `--call-logs -p <backup folder> -a iOS -o <export folder>` to write `call_logs.csv`.
+Yes, from iOS backup folders when Apple's call-history database is present. Use `--call-logs -p <backup folder> -a iOS -o <export folder>` to write `call_logs.csv`. Add `--call-log-format html` or `--call-log-format pdf` for a styled table instead of CSV. Call logs respect the `--start-date`, `--end-date`, and `--conversation-filter` options, so you can export only the calls with a given number or in a given date range. The desktop GUI offers the same formats and filters.
 
 Recent unencrypted iOS backups may omit call history. If the database is missing, the app reports the exact backup manifest paths it tried.
 

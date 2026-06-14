@@ -8,6 +8,8 @@ use std::{io::ErrorKind, path::PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+use imessage_exporter::app::call_logs::CallLogFormat;
+
 use crate::model::{CopyMethod, FormatChoice, NameMode, PlatformChoice};
 
 const FILE_NAME: &str = "imessage-gui-settings.json";
@@ -22,6 +24,7 @@ pub struct Settings {
 
     pub format: FormatStr,
     pub copy_method: CopyStr,
+    pub call_log_format: CallLogFormatStr,
     pub name_mode: NameStr,
     pub custom_name: String,
     pub no_lazy: bool,
@@ -53,6 +56,7 @@ impl Default for Settings {
             attachment_root: String::new(),
             format: FormatStr::Html,
             copy_method: CopyStr::Disabled,
+            call_log_format: CallLogFormatStr::Csv,
             name_mode: NameStr::Me,
             custom_name: String::new(),
             no_lazy: false,
@@ -97,6 +101,12 @@ pub enum NameStr {
     Me,
     Custom,
     CallerId,
+}
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+pub enum CallLogFormatStr {
+    Csv,
+    Html,
+    Pdf,
 }
 
 impl From<PlatformChoice> for PlatformStr {
@@ -152,6 +162,24 @@ impl From<CopyStr> for CopyMethod {
             CopyStr::Clone => CopyMethod::Clone,
             CopyStr::Basic => CopyMethod::Basic,
             CopyStr::Full => CopyMethod::Full,
+        }
+    }
+}
+impl From<CallLogFormat> for CallLogFormatStr {
+    fn from(v: CallLogFormat) -> Self {
+        match v {
+            CallLogFormat::Csv => CallLogFormatStr::Csv,
+            CallLogFormat::Html => CallLogFormatStr::Html,
+            CallLogFormat::Pdf => CallLogFormatStr::Pdf,
+        }
+    }
+}
+impl From<CallLogFormatStr> for CallLogFormat {
+    fn from(v: CallLogFormatStr) -> Self {
+        match v {
+            CallLogFormatStr::Csv => CallLogFormat::Csv,
+            CallLogFormatStr::Html => CallLogFormat::Html,
+            CallLogFormatStr::Pdf => CallLogFormat::Pdf,
         }
     }
 }
@@ -270,6 +298,7 @@ mod tests {
             platform: PlatformStr::IOS,
             format: FormatStr::Pdf,
             copy_method: CopyStr::Full,
+            call_log_format: CallLogFormatStr::Html,
             name_mode: NameStr::Custom,
             custom_name: "Randy".to_string(),
             start_enabled: true,
@@ -286,6 +315,7 @@ mod tests {
         assert!(matches!(back.platform, PlatformStr::IOS));
         assert!(matches!(back.format, FormatStr::Pdf));
         assert!(matches!(back.copy_method, CopyStr::Full));
+        assert!(matches!(back.call_log_format, CallLogFormatStr::Html));
         assert!(matches!(back.name_mode, NameStr::Custom));
         assert_eq!(back.custom_name, "Randy");
         assert!(back.start_enabled);

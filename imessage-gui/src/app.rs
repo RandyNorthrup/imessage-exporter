@@ -17,7 +17,7 @@ use eframe::egui;
 use plist::{Dictionary, Value};
 
 use imessage_database::{tables::table::DEFAULT_PATH_IOS, util::dirs::home};
-use imessage_exporter::app::call_logs;
+use imessage_exporter::app::call_logs::CallLogFormat;
 
 use crate::{
     backend::{self, Command, Event},
@@ -111,6 +111,7 @@ pub struct App {
     platform: PlatformChoice,
     password: String,
     show_password: bool,
+    focus_password: bool,
     contacts_path: String,
     attachment_root: String,
     show_advanced_source: bool,
@@ -160,6 +161,7 @@ pub struct App {
     call_logs: Vec<CallLogEntry>,
     call_log_total: i64,
     call_log_note: String,
+    call_log_format: CallLogFormat,
 
     // Conversation list sorting
     sort_by_count: bool,
@@ -207,6 +209,7 @@ impl App {
             platform: s.platform.into(),
             password: String::new(),
             show_password: false,
+            focus_password: false,
             contacts_path: s.contacts_path,
             attachment_root: s.attachment_root,
             show_advanced_source: false,
@@ -244,6 +247,7 @@ impl App {
             call_logs: Vec::new(),
             call_log_total: 0,
             call_log_note: String::new(),
+            call_log_format: s.call_log_format.into(),
             sort_by_count: s.sort_by_count,
             busy: false,
             busy_label: String::new(),
@@ -269,6 +273,7 @@ impl App {
             attachment_root: self.attachment_root.clone(),
             format: self.format.into(),
             copy_method: self.copy_method.into(),
+            call_log_format: self.call_log_format.into(),
             name_mode: self.name_mode.into(),
             custom_name: self.custom_name.clone(),
             no_lazy: self.no_lazy,
@@ -436,6 +441,29 @@ impl App {
                     self.error = Some(e.clone());
                     self.push_log(format!("Call logs failed: {e}"));
                 }
+                Event::CallLogsExported {
+                    path,
+                    count,
+                    format,
+                } => {
+                    self.busy = false;
+                    self.last_export = Some(path.clone());
+                    let message = format!(
+                        "Exported {count} call log{} ({}) to {}",
+                        if count == 1 { "" } else { "s" },
+                        format.label(),
+                        path.display()
+                    );
+                    self.busy_label = message.clone();
+                    self.error = None;
+                    self.settings_msg = Some(message.clone());
+                    self.push_log(message);
+                }
+                Event::CallLogsExportFailed(e) => {
+                    self.busy = false;
+                    self.error = Some(e.clone());
+                    self.push_log(format!("Call log export failed: {e}"));
+                }
             }
         }
     }
@@ -559,14 +587,14 @@ impl App {
                 }
             },
         };
-        self.start_busy("Opening backup …");
+        self.start_busy("Opening backup ...");
         self.send_command(Command::Open(params), "open source");
     }
 
     fn do_preview(&mut self) {
         match self.build_filters() {
             Ok(filters) => {
-                self.start_busy("Loading preview …");
+                self.start_busy("Loading preview ...");
                 self.send_command(
                     Command::Preview {
                         filters,
@@ -582,7 +610,7 @@ impl App {
     fn do_html_preview(&mut self) {
         match self.build_filters() {
             Ok(filters) => {
-                self.start_busy("Rendering HTML preview …");
+                self.start_busy("Rendering HTML preview ...");
                 self.send_command(Command::HtmlPreview { filters }, "open HTML preview");
             }
             Err(e) => self.error = Some(e),
@@ -611,7 +639,7 @@ impl App {
         cancel_token.store(false, Ordering::Relaxed);
         self.export_in_progress = true;
         self.export_cancel_requested = false;
-        self.start_busy("Exporting …");
+        self.start_busy("Exporting ...");
         if !self.send_command(
             Command::Export {
                 params,
@@ -629,7 +657,7 @@ impl App {
         }
         self.export_cancel_token.store(true, Ordering::Relaxed);
         self.export_cancel_requested = true;
-        self.busy_label = "Cancelling export …".to_string();
+        self.busy_label = "Cancelling export ...".to_string();
         self.error = None;
         self.settings_msg = None;
         self.push_log("Cancellation requested for active export.");
@@ -677,37 +705,72 @@ impl App {
             return;
         }
 
-        self.start_busy("Loading call logs ...");
-        self.send_command(
-            Command::LoadCallLogs {
-                limit: CALL_LOG_LIMIT,
-            },
-            "load call logs",
-        );
+        match self.build_filters() {
+            Ok(filters) => {
+                self.start_busy("Loading call logs ...");
+                self.send_command(
+                    Command::LoadCallLogs {
+                        filters,
+                        limit: CALL_LOG_LIMIT,
+                    },
+                    "load call logs",
+                );
+            }
+            Err(e) => self.error = Some(e),
+        }
     }
 
-    fn save_call_logs_csv(&mut self) {
-        if self.call_logs.is_empty() {
-            self.error = Some("Load call logs before saving CSV.".into());
+    fn export_call_logs(&mut self) {
+        if !self.opened || self.opened_platform != Some(PlatformChoice::IOS) {
+            self.error = Some("Open an iOS backup before exporting call logs.".into());
             return;
         }
 
+        let filters = match self.build_filters() {
+            Ok(filters) => filters,
+            Err(e) => {
+                self.error = Some(e);
+                return;
+            }
+        };
+
+        let format = self.call_log_format;
         let Some(path) = rfd::FileDialog::new()
-            .add_filter("CSV", &["csv"])
-            .set_file_name(call_logs::DEFAULT_CALL_LOG_CSV_FILE_NAME)
+            .add_filter(format.label(), &[format.extension()])
+            .set_file_name(format.default_file_name())
             .save_file()
         else {
             return;
         };
 
-        match fs::write(&path, call_logs::call_logs_csv(&self.call_logs)) {
-            Ok(()) => {
-                self.error = None;
-                self.push_log(format!("Saved call logs CSV: {}", path.display()));
+        // Export runs on the backend so it covers the full filtered set (the
+        // in-app table is capped), exactly like the message exporter.
+        let title = self.call_log_export_title();
+        self.start_busy("Exporting call logs ...");
+        self.send_command(
+            Command::ExportCallLogs(backend::CallLogExportRequest {
+                filters,
+                format,
+                path,
+                title,
+            }),
+            "export call logs",
+        );
+    }
+
+    /// A friendly heading for exported call-log HTML/PDF documents.
+    fn call_log_export_title(&self) -> String {
+        if self.opened_platform == Some(PlatformChoice::IOS) {
+            let name = Path::new(self.backup_path.trim())
+                .file_name()
+                .and_then(|name| name.to_str())
+                .filter(|name| !name.is_empty());
+            match name {
+                Some(name) => format!("Call History - {name}"),
+                None => "Call History".to_string(),
             }
-            Err(why) => {
-                self.error = Some(format!("Could not save {}: {why}", path.display()));
-            }
+        } else {
+            "Call History".to_string()
         }
     }
 
@@ -741,8 +804,9 @@ impl App {
         self.push_log(format!("Selected iOS backup: {}", backup.path.display()));
 
         if backup.encrypted && self.password.trim().is_empty() {
+            self.focus_password = true;
             self.error = Some(
-                "Selected encrypted backup. Enter its backup password, then press Enter in the password field."
+                "This backup is encrypted. Type its password in the highlighted field, then press Enter."
                     .into(),
             );
             return;
@@ -778,7 +842,7 @@ impl App {
                         && source_response.lost_focus()
                         && ui.input(|input| input.key_pressed(egui::Key::Enter));
 
-                    if theme::add_enabled_button(ui, !self.busy, "📁 Folder…").clicked() {
+                    if theme::add_enabled_button(ui, !self.busy, "Folder...").clicked() {
                         if let Some(dir) = rfd::FileDialog::new().pick_folder() {
                             match resolve_source_folder(&dir) {
                                 Ok(source) => {
@@ -798,10 +862,10 @@ impl App {
                             }
                         }
                     }
-                    if theme::add_enabled_button(ui, !self.busy, "Scan backups…").clicked() {
+                    if theme::add_enabled_button(ui, !self.busy, "Scan backups...").clicked() {
                         self.scan_backups();
                     }
-                    if theme::add_enabled_button(ui, !self.busy, "📄 chat.db…").clicked() {
+                    if theme::add_enabled_button(ui, !self.busy, "chat.db...").clicked() {
                         if let Some(file) = rfd::FileDialog::new()
                             .add_filter("iMessage database", &["db"])
                             .add_filter("All files", &["*"])
@@ -838,10 +902,20 @@ impl App {
                             "if encrypted",
                             !self.show_password,
                         );
+                        if self.focus_password {
+                            password_response.request_focus();
+                            self.focus_password = false;
+                        }
                         open_from_enter |= !self.busy
                             && password_response.lost_focus()
                             && ui.input(|input| input.key_pressed(egui::Key::Enter));
                         theme::checkbox(ui, &mut self.show_password, "show");
+                        if theme::add_enabled_button(ui, !self.busy, "Unlock")
+                            .on_hover_text("Open the source (decrypting the backup if needed)")
+                            .clicked()
+                        {
+                            open_from_enter = true;
+                        }
                     }
                 });
 
@@ -867,7 +941,7 @@ impl App {
                             layout::ADVANCED_SOURCE_FIELD_WIDTH,
                             "optional AddressBook database",
                         );
-                        if theme::add_button(ui, "Browse…").clicked() {
+                        if theme::add_button(ui, "Browse...").clicked() {
                             if let Some(file) = rfd::FileDialog::new().pick_file() {
                                 self.contacts_path = file.display().to_string();
                             }
@@ -881,7 +955,7 @@ impl App {
                             layout::ADVANCED_SOURCE_FIELD_WIDTH,
                             "optional (macOS only)",
                         );
-                        if theme::add_button(ui, "Browse…").clicked() {
+                        if theme::add_button(ui, "Browse...").clicked() {
                             if let Some(dir) = rfd::FileDialog::new().pick_folder() {
                                 self.attachment_root = dir.display().to_string();
                             }
@@ -973,7 +1047,7 @@ impl App {
                         }
                         for (id, title, participants, count) in visible {
                             let mut checked = self.selected.contains(&id);
-                            let label = format!("{title}  ·  {count}");
+                            let label = format!("{title}  -  {count}");
                             let resp = theme::checkbox(ui, &mut checked, label);
                             if !participants.is_empty() && participants != title {
                                 resp.on_hover_text(format!("{participants}\n{count} messages"));
@@ -989,7 +1063,7 @@ impl App {
                 if let Some((first, last)) = &self.date_range {
                     theme::group_gap(ui);
                     theme::group_header(ui, "Database date range");
-                    ui.label(theme::small_muted_text(format!("{first}\n→ {last}")));
+                    ui.label(theme::small_muted_text(format!("{first}\nto {last}")));
                 }
             });
     }
@@ -1053,10 +1127,7 @@ impl App {
             .resizable(false)
             .default_width(layout::CONFIRM_DIALOG_WIDTH)
             .show(ctx, |ui| {
-                ui.add(
-                    egui::Label::new(egui::RichText::new(message).color(egui::Color32::BLACK))
-                        .wrap(),
-                );
+                ui.add(egui::Label::new(egui::RichText::new(message)).wrap());
                 theme::inline_separator(ui);
                 theme::control_row(ui, |ui| {
                     if theme::add_enabled_button(ui, !self.busy, "Export all").clicked() {
@@ -1198,7 +1269,7 @@ impl App {
                 layout::EXPORT_PATH_WIDTH,
                 "output folder",
             );
-            if theme::add_button(ui, "Browse…").clicked() {
+            if theme::add_button(ui, "Browse...").clicked() {
                 if let Some(dir) = rfd::FileDialog::new().pick_folder() {
                     self.export_path = dir.display().to_string();
                 }
@@ -1209,21 +1280,18 @@ impl App {
         theme::control_row(ui, |ui| {
             theme::field_label(ui, "");
             let enabled = self.opened && !self.busy;
-            if theme::add_enabled_button(ui, enabled, "👁 Preview").clicked() {
-                self.do_preview();
-            }
-            if theme::add_enabled_button(ui, enabled, "🌐 Open HTML preview")
+            if theme::add_enabled_button(ui, enabled, "Open HTML preview")
                 .on_hover_text("Render the current selection to HTML and open it in your browser")
                 .clicked()
             {
                 self.do_html_preview();
             }
-            if theme::add_enabled_button(ui, enabled, "⬇ Export").clicked() {
+            if theme::add_enabled_button(ui, enabled, "Export").clicked() {
                 self.do_export();
             }
             if self.export_in_progress {
                 let label = if self.export_cancel_requested {
-                    "Cancelling …"
+                    "Cancelling ..."
                 } else {
                     "Cancel export"
                 };
@@ -1232,7 +1300,7 @@ impl App {
                 }
             }
             if let Some(path) = self.last_export.clone() {
-                if theme::add_button(ui, "📂 Open last export").clicked() {
+                if theme::add_button(ui, "Open last export").clicked() {
                     match open::that_detached(&path) {
                         Ok(()) => {
                             self.error = None;
@@ -1244,7 +1312,7 @@ impl App {
                     }
                 }
             }
-            if theme::add_button(ui, "💾 Save settings")
+            if theme::add_button(ui, "Save settings")
                 .on_hover_text("Save current options beside the app (portable)")
                 .clicked()
             {
@@ -1281,11 +1349,7 @@ impl App {
                     }
 
                     theme::field_label(ui, "Message");
-                    let line = if is_error {
-                        format!("⚠ {message}")
-                    } else {
-                        message.clone()
-                    };
+                    let line = message.clone();
                     let text = if is_error {
                         theme::error_text(line)
                     } else {
@@ -1365,6 +1429,18 @@ impl App {
             {
                 self.active_tab = ActiveTab::CallLogs;
             }
+
+            // Preview lives on the right of the tab bar so it is always reachable.
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let enabled = self.opened && !self.busy;
+                if theme::add_enabled_button(ui, enabled, "Preview")
+                    .on_hover_text("Load the current selection into the message preview")
+                    .clicked()
+                {
+                    self.active_tab = ActiveTab::Messages;
+                    self.do_preview();
+                }
+            });
         });
         theme::inline_separator(ui);
         theme::gap(ui, layout::ROW_GAP);
@@ -1401,10 +1477,30 @@ impl App {
             if theme::add_enabled_button(ui, load_enabled, "Load call logs").clicked() {
                 self.do_load_call_logs();
             }
-            if theme::add_enabled_button(ui, !self.call_logs.is_empty(), "Save CSV").clicked() {
-                self.save_call_logs_csv();
+        });
+
+        theme::control_row(ui, |ui| {
+            theme::field_label(ui, "Export as");
+            let export_enabled =
+                self.opened && self.opened_platform == Some(PlatformChoice::IOS) && !self.busy;
+            let format_combo = egui::ComboBox::from_id_salt("call_log_format")
+                .width(layout::FORMAT_WIDTH)
+                .selected_text(self.call_log_format.label())
+                .show_ui(ui, |ui| {
+                    for format in [CallLogFormat::Csv, CallLogFormat::Html, CallLogFormat::Pdf] {
+                        ui.selectable_value(&mut self.call_log_format, format, format.label());
+                    }
+                });
+            theme::paint_dropdown_border(ui, &format_combo.response);
+            if theme::add_enabled_button(ui, export_enabled, "Export...").clicked() {
+                self.export_call_logs();
             }
         });
+
+        ui.label(theme::small_muted_text(
+            "Call logs use the same conversation and date filters as the message preview. \
+             With nothing selected, all calls are included; the export always covers the full filtered set.",
+        ));
 
         if self.opened && self.opened_platform != Some(PlatformChoice::IOS) {
             ui.label(theme::small_muted_text(
@@ -1512,11 +1608,12 @@ fn render_bubble(ui: &mut egui::Ui, m: &PreviewMessage) {
     ui.with_layout(bubble_layout, |ui| {
         let inner_w = theme::preview_bubble_inner_width(ui.available_width());
         theme::preview_bubble_frame(m.is_from_me).show(ui, |ui| {
-            ui.set_width(inner_w);
+            // Cap the width (phone-sized) but let short messages shrink to fit.
+            ui.set_max_width(inner_w);
             ui.with_layout(egui::Layout::top_down(align), |ui| {
                 ui.add(
                     egui::Label::new(theme::preview_meta_text(
-                        format!("{} · {}", m.sender, m.timestamp),
+                        format!("{} - {}", m.sender, m.timestamp),
                         m.is_from_me,
                     ))
                     .wrap(),

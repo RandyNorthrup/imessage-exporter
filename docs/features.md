@@ -22,7 +22,7 @@ This tool targets the current latest public release for Messages.app. It may wor
 - TXT conversation transcripts
 - HTML conversation transcripts with browser-friendly media embeds
 - Native PDF conversation transcripts with rounded chat-bubble styling
-- CSV call-log exports from iOS backups when call history is present
+- CSV, HTML, or PDF call-log exports from iOS backups when call history is present, with the same date and participant filters as message exports
 
 ## Desktop GUI features
 
@@ -32,7 +32,7 @@ This tool targets the current latest public release for Messages.app. It may wor
 - Exports with the same shared `txt`, `html`, and `pdf` pipeline as the command-line binary
 - Can cancel in-progress exports
 - Confirms before exporting every conversation when no conversations are selected
-- Loads and saves iOS Phone/FaceTime call logs when Apple's call-history database is present
+- Loads, filters, and exports iOS Phone/FaceTime call logs (to CSV, HTML, or PDF) when Apple's call-history database is present; the call-log view and export use the same conversation and date filters as the message preview
 
 ## Supported Message Features
 

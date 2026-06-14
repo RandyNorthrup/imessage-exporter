@@ -32,7 +32,12 @@ use printpdf::{
     PdfDocumentReference, PdfLayerReference, Point, Polygon, Rect, Rgb,
 };
 
-use crate::app::{error::RuntimeError, runtime::Config, sanitizers::sanitize_filename};
+use crate::app::{
+    call_logs::{CallDirection, CallLogEntry},
+    error::RuntimeError,
+    runtime::Config,
+    sanitizers::sanitize_filename,
+};
 
 #[derive(Clone, Debug)]
 pub struct PreviewMessage {
@@ -916,6 +921,224 @@ fn render_with_cancel(
     Ok(())
 }
 
+// MARK: Call-log table rendering
+
+const TABLE_HEADER_SIZE: f32 = 9.5;
+const TABLE_BODY_SIZE: f32 = 9.0;
+const TABLE_CELL_PAD_X: f32 = 4.0;
+const TABLE_CELL_PAD_Y: f32 = 4.0;
+const TABLE_LINE_GAP: f32 = 1.5;
+/// Column headers and their width as a fraction of the printable content width.
+const CALL_LOG_COLUMNS: [(&str, f32); 6] = [
+    ("Started", 0.24),
+    ("Direction", 0.13),
+    ("Address", 0.26),
+    ("Duration", 0.11),
+    ("Service", 0.12),
+    ("Type", 0.14),
+];
+
+/// Render call-history `entries` to a paginated, striped PDF table at `out_path`.
+///
+/// Built entirely in-process with `printpdf`, matching the message exporter's
+/// "no headless browser, no external programs" approach. The column header is
+/// repeated at the top of every page.
+pub fn render_call_logs(
+    entries: &[CallLogEntry],
+    title: &str,
+    out_path: &Path,
+) -> Result<(), String> {
+    let (doc, page1, layer1) = PdfDocument::new(title, Mm(PAGE_W_MM), Mm(PAGE_H_MM), "Layer 1");
+    let face = Typeface::load(&doc)?;
+
+    let content_left = MARGIN_MM * PT_PER_MM;
+    let content_right = (PAGE_W_MM - MARGIN_MM) * PT_PER_MM;
+    let content_w = content_right - content_left;
+    let top = (PAGE_H_MM - MARGIN_MM) * PT_PER_MM;
+    let bottom = MARGIN_MM * PT_PER_MM;
+
+    let col_widths: Vec<f32> = CALL_LOG_COLUMNS
+        .iter()
+        .map(|(_, frac)| frac * content_w)
+        .collect();
+
+    let new_page = |doc: &PdfDocumentReference| -> Page {
+        let (p, l) = doc.add_page(Mm(PAGE_W_MM), Mm(PAGE_H_MM), "Layer 1");
+        Page {
+            layer: doc.get_page(p).get_layer(l),
+        }
+    };
+
+    let mut page = Page {
+        layer: doc.get_page(page1).get_layer(layer1),
+    };
+    let mut y = top;
+
+    // Title and summary line.
+    page.layer.set_fill_color(rgb(20, 20, 20));
+    page.layer.use_text(
+        title,
+        TITLE_SIZE,
+        mm(content_left),
+        mm(y - TITLE_SIZE),
+        &face.pdf_font,
+    );
+    y -= TITLE_SIZE + PARA_GAP;
+
+    let summary = format!(
+        "{} call{}",
+        entries.len(),
+        if entries.len() == 1 { "" } else { "s" }
+    );
+    page.layer.set_fill_color(rgb(90, 90, 95));
+    page.layer.use_text(
+        &summary,
+        HEADER_SIZE,
+        mm(content_left),
+        mm(y - HEADER_SIZE),
+        &face.pdf_font,
+    );
+    y -= HEADER_SIZE + PARA_GAP;
+
+    if entries.is_empty() {
+        page.layer.set_fill_color(rgb(90, 90, 95));
+        page.layer.use_text(
+            "No call history.",
+            BODY_SIZE,
+            mm(content_left),
+            mm(y - BODY_SIZE),
+            &face.pdf_font,
+        );
+        return save_pdf(doc, out_path);
+    }
+
+    y = draw_call_log_header(&page.layer, &face, &col_widths, content_left, y);
+
+    for (row_index, entry) in entries.iter().enumerate() {
+        let cells = [
+            entry.started.as_str(),
+            entry.direction.label(),
+            entry.address.as_str(),
+            entry.duration.as_str(),
+            entry.service.as_str(),
+            entry.call_type.as_str(),
+        ];
+        let wrapped: Vec<Vec<String>> = cells
+            .iter()
+            .enumerate()
+            .map(|(i, text)| {
+                let inner = (col_widths[i] - 2.0 * TABLE_CELL_PAD_X).max(TABLE_BODY_SIZE);
+                face.wrap(text, TABLE_BODY_SIZE, inner)
+            })
+            .collect();
+        let line_count = wrapped.iter().map(|c| c.len().max(1)).max().unwrap_or(1);
+        let row_height = line_count as f32 * TABLE_BODY_SIZE
+            + (line_count.saturating_sub(1) as f32) * TABLE_LINE_GAP
+            + 2.0 * TABLE_CELL_PAD_Y;
+
+        // Page break, repeating the header on the fresh page.
+        if y - row_height < bottom {
+            page = new_page(&doc);
+            y = top;
+            y = draw_call_log_header(&page.layer, &face, &col_widths, content_left, y);
+        }
+
+        let row_top = y;
+        let row_bottom = y - row_height;
+
+        // Zebra striping for odd rows.
+        if row_index % 2 == 1 {
+            draw_rect(
+                &page.layer,
+                content_left,
+                row_bottom,
+                content_w,
+                row_height,
+                &rgb(244, 247, 250),
+            );
+        }
+
+        let mut x = content_left;
+        for (i, lines) in wrapped.iter().enumerate() {
+            let color = if i == 1 {
+                call_direction_color(entry.direction)
+            } else {
+                rgb(20, 20, 20)
+            };
+            page.layer.set_fill_color(color);
+            let mut cursor = row_top - TABLE_CELL_PAD_Y;
+            for (line_idx, line) in lines.iter().enumerate() {
+                if line_idx > 0 {
+                    cursor -= TABLE_LINE_GAP;
+                }
+                cursor -= TABLE_BODY_SIZE;
+                page.layer.use_text(
+                    line.as_str(),
+                    TABLE_BODY_SIZE,
+                    mm(x + TABLE_CELL_PAD_X),
+                    mm(cursor),
+                    &face.pdf_font,
+                );
+            }
+            x += col_widths[i];
+        }
+
+        y = row_bottom;
+    }
+
+    save_pdf(doc, out_path)
+}
+
+fn save_pdf(doc: PdfDocumentReference, out_path: &Path) -> Result<(), String> {
+    let file = std::fs::File::create(out_path)
+        .map_err(|e| format!("cannot create {}: {e}", out_path.display()))?;
+    doc.save(&mut BufWriter::new(file))
+        .map_err(|e| format!("cannot write PDF {}: {e}", out_path.display()))?;
+    Ok(())
+}
+
+fn draw_call_log_header(
+    layer: &PdfLayerReference,
+    face: &Typeface,
+    col_widths: &[f32],
+    content_left: f32,
+    y: f32,
+) -> f32 {
+    let header_height = TABLE_HEADER_SIZE + 2.0 * TABLE_CELL_PAD_Y;
+    let content_w: f32 = col_widths.iter().sum();
+    draw_rect(
+        layer,
+        content_left,
+        y - header_height,
+        content_w,
+        header_height,
+        &rgb(233, 238, 244),
+    );
+    layer.set_fill_color(rgb(40, 46, 54));
+    let baseline = y - TABLE_CELL_PAD_Y - TABLE_HEADER_SIZE;
+    let mut x = content_left;
+    for (i, (name, _)) in CALL_LOG_COLUMNS.iter().enumerate() {
+        layer.use_text(
+            *name,
+            TABLE_HEADER_SIZE,
+            mm(x + TABLE_CELL_PAD_X),
+            mm(baseline),
+            &face.pdf_font,
+        );
+        x += col_widths[i];
+    }
+    y - header_height
+}
+
+fn call_direction_color(direction: CallDirection) -> Color {
+    match direction {
+        CallDirection::Missed => rgb(178, 45, 45),
+        CallDirection::Outgoing => rgb(29, 111, 206),
+        CallDirection::Blocked => rgb(171, 99, 0),
+        _ => rgb(20, 20, 20),
+    }
+}
+
 fn rounded_rect_points(x: f32, y: f32, w: f32, h: f32, radius: f32) -> Vec<(Point, bool)> {
     let r = radius.min(w / 2.0).min(h / 2.0).max(0.0);
     if r == 0.0 {
@@ -1079,6 +1302,55 @@ mod tests {
         ];
         render(&messages, "Sample Conversation", &out).unwrap();
         assert!(std::fs::metadata(&out).unwrap().len() > 0);
+        let _ = std::fs::remove_file(&out);
+    }
+
+    fn call(direction: CallDirection, address: &str, call_type: &str) -> CallLogEntry {
+        CallLogEntry {
+            id: 0,
+            started: "Jun 04, 2026  1:02:03 PM".to_string(),
+            direction,
+            address: address.to_string(),
+            duration: "0:42".to_string(),
+            service: "Phone".to_string(),
+            call_type: call_type.to_string(),
+        }
+    }
+
+    #[test]
+    fn renders_paginated_call_log_table() {
+        let dir = std::env::temp_dir().join("imessage-gui-pdf-calllog-test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let out = dir.join("call_logs.pdf");
+
+        // Enough rows to force multiple pages and a repeated header.
+        let entries: Vec<CallLogEntry> = (0..120)
+            .map(|i| {
+                let direction = match i % 4 {
+                    0 => CallDirection::Incoming,
+                    1 => CallDirection::Outgoing,
+                    2 => CallDirection::Missed,
+                    _ => CallDirection::Blocked,
+                };
+                call(direction, &format!("+1555000{i:04}"), "Audio")
+            })
+            .collect();
+
+        render_call_logs(&entries, "Call History", &out).unwrap();
+        let bytes = std::fs::read(&out).unwrap();
+        assert!(bytes.starts_with(b"%PDF"));
+        assert!(bytes.len() > 1000, "120-row table should be non-trivial");
+        let _ = std::fs::remove_file(&out);
+    }
+
+    #[test]
+    fn renders_empty_call_log_pdf() {
+        let dir = std::env::temp_dir().join("imessage-gui-pdf-calllog-empty-test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let out = dir.join("empty.pdf");
+        render_call_logs(&[], "Call History", &out).unwrap();
+        let bytes = std::fs::read(&out).unwrap();
+        assert!(bytes.starts_with(b"%PDF"));
         let _ = std::fs::remove_file(&out);
     }
 

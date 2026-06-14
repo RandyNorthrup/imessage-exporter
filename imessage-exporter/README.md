@@ -132,13 +132,19 @@ The [releases page](https://github.com/ReagentX/imessage-exporter/releases) prov
         Use this flag to suppress the bar even in an interactive terminal.
 
     --call-logs
-        Export iOS Phone/FaceTime call history to call_logs.csv and exit
+        Export iOS Phone/FaceTime call history and exit
+        Writes call_logs.csv by default; use --call-log-format for html or pdf
+        The --start-date, --end-date, and --conversation-filter options also narrow call logs
         Requires an iOS backup folder source
 
     --call-log-limit <rows>
         Maximum number of call-history rows to export
         Only valid with --call-logs. If omitted, all rows are exported.
-        
+
+    --call-log-format <csv, html, pdf>
+        File format for exported call history: csv, html, or pdf
+        Only valid with --call-logs. If omitted, the default is csv.
+
 -h, --help
         Print help
 -V, --version
@@ -175,6 +181,12 @@ Export iOS Phone/FaceTime call history from an iPhone backup located at `~/iphon
 
 ```zsh
 imessage-exporter --call-logs -p ~/iphone_backup_latest -a iOS -o backup_export
+```
+
+Export call history as a PDF, limited to calls with a specific number since a given date:
+
+```zsh
+imessage-exporter --call-logs --call-log-format pdf -t 5558675309 -s 2024-01-01 -p ~/iphone_backup_latest -a iOS -o backup_export
 ```
 
 Export as `html` from `/Volumes/external/chat.db` to `/Volumes/external/export` without copying attachments:
@@ -283,6 +295,8 @@ Very large conversations can produce large, many-page PDFs and may take longer t
 
 ### Call Log Exports
 
-`--call-logs` exports iOS Phone and FaceTime history from an iOS backup folder to `call_logs.csv`. This reads Apple's call-history database when that database is present in the backup.
+`--call-logs` exports iOS Phone and FaceTime history from an iOS backup folder. This reads Apple's call-history database when that database is present in the backup. The output format is chosen with `--call-log-format`: `csv` (the default, `call_logs.csv`), `html` (a styled table in `call_logs.html`), or `pdf` (a paginated table in `call_logs.pdf`). The HTML and PDF tables are rendered natively, with no browser automation. Each call is labeled by direction (Incoming, Outgoing, Missed, Blocked) and type (Audio or Video).
+
+Call-log exports honor the same filters as message exports: `--start-date`/`--end-date` bound the call window and `--conversation-filter` keeps only calls with the listed numbers or emails. With no filter, every call is exported.
 
 Recent unencrypted iOS backups may omit call history. If the call-history database is not available, the command reports the exact backup manifest paths it tried so you can confirm whether the backup contains the data. Encrypted backups are more likely to include this database.

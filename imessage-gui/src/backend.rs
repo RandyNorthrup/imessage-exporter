@@ -20,7 +20,7 @@ use std::{
 use eframe::egui;
 
 use imessage_database::{
-    tables::messages::Message,
+    tables::{handle::Handle, messages::Message, table::Cacheable},
     util::{
         dates::{format as fmt_date, get_local_time},
         platform::Platform,
@@ -29,7 +29,7 @@ use imessage_database::{
 };
 use imessage_exporter::{
     app::{
-        call_logs,
+        call_logs::{self, CallLogFilter, CallLogFormat},
         compatibility::attachment_manager::{AttachmentManager, AttachmentManagerMode},
         error::RuntimeError,
         export_type::ExportType,
@@ -62,9 +62,19 @@ pub enum Command {
         filters: Filters,
     },
     LoadCallLogs {
+        filters: Filters,
         limit: usize,
     },
+    ExportCallLogs(CallLogExportRequest),
     Shutdown,
+}
+
+/// Everything the backend needs to write a filtered call-log export to disk.
+pub struct CallLogExportRequest {
+    pub filters: Filters,
+    pub format: CallLogFormat,
+    pub path: PathBuf,
+    pub title: String,
 }
 
 /// Messages sent from the backend to the UI.
@@ -101,6 +111,12 @@ pub enum Event {
         source: String,
     },
     CallLogsFailed(String),
+    CallLogsExported {
+        path: PathBuf,
+        count: usize,
+        format: CallLogFormat,
+    },
+    CallLogsExportFailed(String),
 }
 
 /// Spawn the backend worker, returning the command sender and event receiver.
@@ -138,9 +154,21 @@ fn backend_loop(cmd_rx: &Receiver<Command>, evt_tx: &Sender<Event>, ctx: &egui::
             Command::HtmlPreview { filters } => {
                 handle_html_preview(config.as_mut(), &filters, evt_tx, ctx)
             }
-            Command::LoadCallLogs { limit } => {
-                handle_load_call_logs(config.as_ref(), opened_source.as_ref(), limit, evt_tx, ctx)
-            }
+            Command::LoadCallLogs { filters, limit } => handle_load_call_logs(
+                config.as_ref(),
+                opened_source.as_ref(),
+                &filters,
+                limit,
+                evt_tx,
+                ctx,
+            ),
+            Command::ExportCallLogs(request) => handle_export_call_logs(
+                config.as_ref(),
+                opened_source.as_ref(),
+                &request,
+                evt_tx,
+                ctx,
+            ),
         }
     }
 }
@@ -161,7 +189,7 @@ fn handle_open(
     send(
         evt_tx,
         ctx,
-        Event::Status(format!("Opening {} …", params.db_path.display())),
+        Event::Status(format!("Opening {} ...", params.db_path.display())),
     );
 
     let platform = match params.platform {
@@ -189,7 +217,7 @@ fn handle_open(
     send(
         evt_tx,
         ctx,
-        Event::Status("Building cache (this can take a moment on large databases) …".into()),
+        Event::Status("Building cache (this can take a moment on large databases) ...".into()),
     );
 
     let options = Options {
@@ -265,7 +293,7 @@ fn handle_open(
     let total_messages = diag.total_messages;
 
     let summary = format!(
-        "{} • {} conversations • {} messages",
+        "{} - {} conversations - {} messages",
         if is_ios {
             "iOS backup"
         } else {
@@ -442,38 +470,25 @@ fn collect_preview(
 fn handle_load_call_logs(
     config: Option<&Config>,
     source: Option<&OpenedSource>,
+    filters: &Filters,
     limit: usize,
     evt_tx: &Sender<Event>,
     ctx: &egui::Context,
 ) {
-    let Some(config) = config else {
-        send(
-            evt_tx,
-            ctx,
-            Event::CallLogsFailed("Open an iOS backup before loading call logs.".into()),
-        );
+    let Some((config, source)) = require_ios_call_log_source(config, source, evt_tx, ctx) else {
         return;
     };
-    let Some(source) = source else {
-        send(
-            evt_tx,
-            ctx,
-            Event::CallLogsFailed("Open an iOS backup before loading call logs.".into()),
-        );
-        return;
-    };
-    if source.platform != PlatformChoice::IOS {
-        send(
-            evt_tx,
-            ctx,
-            Event::CallLogsFailed("Call logs are available from iOS backup folders only.".into()),
-        );
-        return;
-    }
 
     send(evt_tx, ctx, Event::Status("Loading call logs ...".into()));
 
-    match call_logs::load(config, &source.root_path, Some(limit)) {
+    let filter = match build_call_log_filter(config, filters) {
+        Ok(filter) => filter,
+        Err(why) => {
+            send(evt_tx, ctx, Event::CallLogsFailed(why));
+            return;
+        }
+    };
+    match call_logs::load(config, &source.root_path, &filter, Some(limit)) {
         Ok(result) => send(
             evt_tx,
             ctx,
@@ -485,6 +500,146 @@ fn handle_load_call_logs(
         ),
         Err(why) => send(evt_tx, ctx, Event::CallLogsFailed(format!("{why}"))),
     }
+}
+
+fn handle_export_call_logs(
+    config: Option<&Config>,
+    source: Option<&OpenedSource>,
+    request: &CallLogExportRequest,
+    evt_tx: &Sender<Event>,
+    ctx: &egui::Context,
+) {
+    let Some((config, source)) = require_ios_call_log_source(config, source, evt_tx, ctx) else {
+        return;
+    };
+
+    send(
+        evt_tx,
+        ctx,
+        Event::Status(format!(
+            "Exporting call logs to {} ...",
+            request.path.display()
+        )),
+    );
+
+    // No row limit: the export always covers the full filtered set, mirroring
+    // the message exporter (the in-app table is capped, the export is not).
+    let filter = match build_call_log_filter(config, &request.filters) {
+        Ok(filter) => filter,
+        Err(why) => {
+            send(evt_tx, ctx, Event::CallLogsExportFailed(why));
+            return;
+        }
+    };
+    let result = match call_logs::load(config, &source.root_path, &filter, None) {
+        Ok(result) => result,
+        Err(why) => {
+            send(evt_tx, ctx, Event::CallLogsExportFailed(format!("{why}")));
+            return;
+        }
+    };
+
+    match call_logs::write_call_logs(
+        &result.entries,
+        request.format,
+        &request.title,
+        &request.path,
+    ) {
+        Ok(()) => send(
+            evt_tx,
+            ctx,
+            Event::CallLogsExported {
+                path: request.path.clone(),
+                count: result.entries.len(),
+                format: request.format,
+            },
+        ),
+        Err(why) => send(evt_tx, ctx, Event::CallLogsExportFailed(format!("{why}"))),
+    }
+}
+
+/// Validate that an iOS backup is open, returning the config and source or
+/// emitting the appropriate failure event.
+fn require_ios_call_log_source<'a>(
+    config: Option<&'a Config>,
+    source: Option<&'a OpenedSource>,
+    evt_tx: &Sender<Event>,
+    ctx: &egui::Context,
+) -> Option<(&'a Config, &'a OpenedSource)> {
+    let fail = |evt_tx: &Sender<Event>, ctx: &egui::Context, message: &str| {
+        send(evt_tx, ctx, Event::CallLogsFailed(message.to_string()));
+    };
+
+    let (Some(config), Some(source)) = (config, source) else {
+        fail(evt_tx, ctx, "Open an iOS backup before loading call logs.");
+        return None;
+    };
+    if source.platform != PlatformChoice::IOS {
+        fail(
+            evt_tx,
+            ctx,
+            "Call logs are available from iOS backup folders only.",
+        );
+        return None;
+    }
+    Some((config, source))
+}
+
+/// Resolve the GUI message filters into a [`CallLogFilter`] so the call-log view
+/// and exports honor the same conversation/number and date selection as the
+/// message preview. With nothing selected, the filter is unrestricted (all calls).
+fn build_call_log_filter(config: &Config, filters: &Filters) -> Result<CallLogFilter, String> {
+    let addresses = if !filters.selected_raw_chat_ids.is_empty() {
+        addresses_for_chats(config, &filters.selected_raw_chat_ids)?
+    } else if let Some(text) = filters
+        .conversation_filter
+        .as_ref()
+        .filter(|text| !text.trim().is_empty())
+    {
+        text.split(',')
+            .map(str::trim)
+            .filter(|term| !term.is_empty())
+            .map(ToOwned::to_owned)
+            .collect()
+    } else {
+        Vec::new()
+    };
+
+    Ok(CallLogFilter {
+        addresses,
+        start: filters.start_ns,
+        end: filters.end_ns,
+    })
+}
+
+/// Collect the participant phone numbers/emails for the given raw chat ids, plus
+/// each chat's identifier (the number/email for 1:1 conversations).
+fn addresses_for_chats(config: &Config, raw_chat_ids: &[i32]) -> Result<Vec<String>, String> {
+    let handle_addresses = Handle::cache(config.db())
+        .map_err(|why| format!("Could not resolve conversation phone numbers: {why}"))?;
+    let mut seen = BTreeSet::new();
+    let mut addresses = Vec::new();
+    let mut push = |value: &str| {
+        let value = value.trim();
+        if !value.is_empty() && seen.insert(value.to_string()) {
+            addresses.push(value.to_string());
+        }
+    };
+
+    for chat_id in raw_chat_ids {
+        if let Some(handle_ids) = config.chatroom_participants.get(chat_id) {
+            for handle_id in handle_ids {
+                if let Some(address) = handle_addresses.get(handle_id) {
+                    push(address);
+                }
+            }
+        }
+        // 1:1 conversations carry the number/email as the chat identifier.
+        if let Some(chat) = config.chatrooms.get(chat_id) {
+            push(&chat.chat_identifier);
+        }
+    }
+    Ok(addresses)
 }
 
 // MARK: Export
@@ -586,7 +741,7 @@ fn handle_export(
         evt_tx,
         ctx,
         Event::Status(format!(
-            "Exporting {total} messages to {} …",
+            "Exporting {total} messages to {} ...",
             export_path.display()
         )),
     );
@@ -693,7 +848,7 @@ fn handle_html_preview(
     send(
         evt_tx,
         ctx,
-        Event::Status("Rendering HTML preview …".into()),
+        Event::Status("Rendering HTML preview ...".into()),
     );
 
     if let Err(why) = config.start() {

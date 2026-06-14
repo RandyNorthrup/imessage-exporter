@@ -24,7 +24,7 @@ Installation instructions for the binary are located [here](imessage-exporter/RE
 
 ## Desktop GUI
 
-The native desktop GUI can open macOS message databases, iOS backup folders, and loose `sms.db` files, then preview messages, open a browser-based HTML preview, export messages, and load call logs from iOS backups when Apple's call-history database is present.
+The native desktop GUI can open macOS message databases, iOS backup folders, and loose `sms.db` files, then preview messages, open a browser-based HTML preview, and export messages. It can also load, filter, and export iOS Phone/FaceTime call logs (to CSV, HTML, or PDF) when Apple's call-history database is present. Call logs honor the same conversation and date filters as the message preview.
 
 The GUI uses the same exporter pipeline as the command-line binary. It also adds desktop-specific safeguards: in-progress exports can be cancelled, and exporting with no conversations selected prompts for confirmation with the total number of conversations and messages that would be exported.
 
@@ -56,6 +56,24 @@ This crate supports every iMessage feature as of macOS Tahoe 26.5 (25F71) and iO
 - Handwritten messages
 
 See more detail about supported features [here](docs/features.md).
+
+## Building from source
+
+Two equivalent build scripts check, test, and package the release binaries. Both run the same steps (format check, clippy with warnings denied, doc build, tests, release build) and copy the binaries (named with the host target triple) and the license into `output/`.
+
+- macOS and Linux (and Windows under Git Bash or WSL):
+
+  ```zsh
+  ./build.sh
+  ```
+
+- Windows, or anywhere [PowerShell](https://learn.microsoft.com/powershell/) is installed:
+
+  ```pwsh
+  ./build.ps1
+  ```
+
+For normal use, `cargo install imessage-exporter` installs the command-line binary without cloning the repository.
 
 ## Frequently Asked Questions
 

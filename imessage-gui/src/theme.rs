@@ -19,11 +19,11 @@ pub mod layout {
     pub const PREVIEW_MIN_HEIGHT: f32 = 180.0;
     pub const EXPORT_CONTROLS_HEIGHT: f32 = 330.0;
     pub const EXPORT_CONTROLS_MIN_VISIBLE_HEIGHT: f32 = 140.0;
-    pub const PREVIEW_TABLET_MIN_WIDTH: f32 = 480.0;
-    pub const PREVIEW_TABLET_MAX_WIDTH: f32 = 760.0;
-    pub const PREVIEW_TABLET_MIN_HEIGHT: f32 = 260.0;
-    pub const PREVIEW_TABLET_MAX_HEIGHT: f32 = 460.0;
-    pub const PREVIEW_TABLET_ASPECT_RATIO: f32 = 4.0 / 3.0;
+    /// Narrowest the preview "screen" gets - about a phone held in portrait, so
+    /// message bubbles and placeholder text always fit.
+    pub const PREVIEW_TABLET_MIN_WIDTH: f32 = 400.0;
+    /// Widest the preview "screen" gets - about a tablet held in portrait.
+    pub const PREVIEW_TABLET_MAX_WIDTH: f32 = 800.0;
     pub const PREVIEW_TABLET_CENTER_PADDING: f32 = 16.0;
     pub const PREVIEW_TABLET_BEZEL: f32 = 12.0;
     pub const PREVIEW_TABLET_TOP_BAR_HEIGHT: f32 = 22.0;
@@ -70,6 +70,9 @@ pub mod layout {
 
     pub const PREVIEW_BUBBLE_MAX_FRACTION: f32 = 0.80;
     pub const PREVIEW_BUBBLE_MIN_WIDTH: f32 = 220.0;
+    /// Hard cap on bubble width so they stay phone-sized instead of stretching
+    /// across a wide preview "screen".
+    pub const PREVIEW_BUBBLE_MAX_WIDTH: f32 = 300.0;
     pub const PREVIEW_BUBBLE_RADIUS: f32 = 10.0;
 
     pub const ITEM_SPACING_X: f32 = 8.0;
@@ -566,6 +569,9 @@ pub fn preview_tablet_area(ui: &mut egui::Ui, add_contents: impl FnOnce(&mut egu
     );
 }
 
+/// The maximum width a message bubble may occupy. Bubbles shrink to fit their
+/// content, but never grow past this - a hard phone-sized cap so they don't span
+/// a wide preview screen.
 pub fn preview_bubble_outer_width(available_width: f32) -> f32 {
     let available_width = available_width.max(0.0);
     if available_width <= 0.0 {
@@ -574,6 +580,7 @@ pub fn preview_bubble_outer_width(available_width: f32) -> f32 {
 
     let min_width = layout::PREVIEW_BUBBLE_MIN_WIDTH.min(available_width);
     (available_width * layout::PREVIEW_BUBBLE_MAX_FRACTION)
+        .min(layout::PREVIEW_BUBBLE_MAX_WIDTH)
         .max(min_width)
         .min(available_width)
 }
@@ -583,42 +590,23 @@ pub fn preview_bubble_inner_width(available_width: f32) -> f32 {
 }
 
 fn preview_tablet_size(available: egui::Vec2) -> egui::Vec2 {
-    let max_width = (available.x - layout::PREVIEW_TABLET_CENTER_PADDING * 2.0)
-        .clamp(0.0, layout::PREVIEW_TABLET_MAX_WIDTH);
-    let max_height = (available.y - layout::PREVIEW_TABLET_CENTER_PADDING * 2.0)
-        .clamp(0.0, layout::PREVIEW_TABLET_MAX_HEIGHT);
-    if max_width <= 0.0 || max_height <= 0.0 {
+    let usable_width = (available.x - layout::PREVIEW_TABLET_CENTER_PADDING * 2.0).max(0.0);
+    let usable_height = (available.y - layout::PREVIEW_TABLET_CENTER_PADDING * 2.0).max(0.0);
+    if usable_width <= 0.0 || usable_height <= 0.0 {
         return egui::Vec2::ZERO;
     }
 
-    let aspect_ratio = layout::PREVIEW_TABLET_ASPECT_RATIO;
-    let mut width = max_width;
-    let mut height = width / aspect_ratio;
-    if height > max_height {
-        height = max_height;
-        width = height * aspect_ratio;
-    }
+    // Width is driven by the available width, not a fixed device aspect ratio,
+    // so a short preview pane (when the export controls are tall) never collapses
+    // the screen to an unreadable sliver. It spans from a phone's width up to a
+    // tablet held in portrait, bounded by the space we actually have.
+    let min_width = layout::PREVIEW_TABLET_MIN_WIDTH.min(usable_width);
+    let width = usable_width
+        .min(layout::PREVIEW_TABLET_MAX_WIDTH)
+        .max(min_width);
 
-    let min_width = layout::PREVIEW_TABLET_MIN_WIDTH.min(max_width);
-    let min_height = layout::PREVIEW_TABLET_MIN_HEIGHT.min(max_height);
-    if width < min_width {
-        width = min_width;
-        height = width / aspect_ratio;
-    }
-    if height < min_height {
-        height = min_height;
-        width = height * aspect_ratio;
-    }
-    if width > max_width {
-        width = max_width;
-        height = width / aspect_ratio;
-    }
-    if height > max_height {
-        height = max_height;
-        width = height * aspect_ratio;
-    }
-
-    egui::vec2(width, height)
+    // Height simply fills the pane; the message list scrolls inside the screen.
+    egui::vec2(width, usable_height)
 }
 
 fn preview_tablet_frame() -> egui::Frame {
@@ -855,10 +843,13 @@ mod tests {
         let size = preview_tablet_size(available);
 
         assert!(size.x <= layout::PREVIEW_TABLET_MAX_WIDTH);
-        assert!(size.y <= layout::PREVIEW_TABLET_MAX_HEIGHT);
         assert!(size.x <= available.x - layout::PREVIEW_TABLET_CENTER_PADDING * 2.0);
         assert!(size.y <= available.y - layout::PREVIEW_TABLET_CENTER_PADDING * 2.0);
-        assert!((size.x / size.y - layout::PREVIEW_TABLET_ASPECT_RATIO).abs() < 0.01);
+        // Height fills the pane rather than following a fixed device aspect.
+        assert_eq!(
+            size.y,
+            available.y - layout::PREVIEW_TABLET_CENTER_PADDING * 2.0
+        );
     }
 
     #[test]
@@ -868,6 +859,42 @@ mod tests {
 
         assert!(size.x >= layout::PREVIEW_TABLET_MIN_WIDTH);
         assert!(size.x <= available.x - layout::PREVIEW_TABLET_CENTER_PADDING * 2.0);
+    }
+
+    #[test]
+    fn preview_width_does_not_collapse_in_a_short_pane() {
+        // A wide but short preview pane (tall export controls) must still render
+        // at least phone-wide so bubbles and placeholder text fit on screen.
+        let available = egui::vec2(760.0, 200.0);
+        let size = preview_tablet_size(available);
+
+        assert!(
+            size.x >= layout::PREVIEW_TABLET_MIN_WIDTH,
+            "preview width collapsed to {} in a short pane",
+            size.x
+        );
+        assert!(size.y > 0.0);
+    }
+
+    #[test]
+    fn preview_width_is_capped_at_tablet_width_on_wide_windows() {
+        let available = egui::vec2(1400.0, 700.0);
+        let size = preview_tablet_size(available);
+
+        assert_eq!(size.x, layout::PREVIEW_TABLET_MAX_WIDTH);
+    }
+
+    #[test]
+    fn preview_bubble_caps_at_phone_width_on_wide_screens() {
+        // On a wide preview screen the bubble must not stretch to span it.
+        assert_eq!(
+            preview_bubble_outer_width(1000.0),
+            layout::PREVIEW_BUBBLE_MAX_WIDTH
+        );
+        assert_eq!(
+            preview_bubble_outer_width(800.0),
+            layout::PREVIEW_BUBBLE_MAX_WIDTH
+        );
     }
 
     #[test]

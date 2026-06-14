@@ -5,14 +5,31 @@ use std::process::ExitCode;
 use imessage_exporter::{
     Config,
     app::{
-        call_logs,
-        options::{Options, from_command_line},
+        call_logs::{self, CallLogFormat},
+        options::{OPTION_CALL_LOG_FORMAT, OPTION_CALL_LOGS, Options, from_command_line},
     },
 };
 
 fn main() -> ExitCode {
     // Get args from command line
     let args = from_command_line();
+
+    // `--call-log-format` only makes sense alongside `--call-logs`.
+    let call_log_format = match args.get_one::<String>(OPTION_CALL_LOG_FORMAT) {
+        Some(_) if !args.get_flag(OPTION_CALL_LOGS) => {
+            eprintln!(
+                "Invalid command line options: --{OPTION_CALL_LOG_FORMAT} requires --{OPTION_CALL_LOGS}"
+            );
+            return ExitCode::FAILURE;
+        }
+        Some(value) => match value.as_str() {
+            "html" => CallLogFormat::Html,
+            "pdf" => CallLogFormat::Pdf,
+            _ => CallLogFormat::Csv,
+        },
+        None => CallLogFormat::Csv,
+    };
+
     // Create application options
     let options = Options::from_args(&args);
 
@@ -20,7 +37,7 @@ fn main() -> ExitCode {
     match options {
         Ok(options) => {
             if options.export_call_logs {
-                match call_logs::export_csv_from_options(&options) {
+                match call_logs::export_from_options(&options, call_log_format) {
                     Ok((path, result)) => {
                         println!(
                             "Exported {} call log{} from {} to {}",

@@ -18,8 +18,6 @@ use crate::app::{
     compatibility::backup::decrypt_backup, error::RuntimeError, options::Options, runtime::Config,
 };
 
-pub const DEFAULT_CALL_LOG_CSV_FILE_NAME: &str = "call_logs.csv";
-
 const IOS_BACKUP_DOMAIN_SEPARATOR: &str = "-";
 const IOS_BACKUP_HASH_FOLDER_LEN: usize = 2;
 const HEX_CHARS_PER_BYTE: usize = 2;
@@ -31,6 +29,12 @@ const SQLITE_WAL_SUFFIX: &str = "-wal";
 const SQLITE_SHM_SUFFIX: &str = "-shm";
 const CALL_LOG_NO_VALUE: &str = "Unknown";
 const CALL_LOG_TYPE_PREFIX: &str = "Type";
+const CALL_LOG_DOCUMENT_TITLE: &str = "Call History";
+const CALL_TYPE_AUDIO: i64 = 1;
+const CALL_TYPE_FACETIME_VIDEO: i64 = 8;
+const CALL_TYPE_FACETIME_AUDIO: i64 = 16;
+const CALL_TYPE_AUDIO_LABEL: &str = "Audio";
+const CALL_TYPE_VIDEO_LABEL: &str = "Video";
 const CALL_LOG_CSV_HEADER: &str = "Started,Direction,Address,Duration,Service,Type\n";
 const CALL_HISTORY_MISSING_UNENCRYPTED_HINT: &str = "This iOS backup is not encrypted, and its manifest does not list the Apple \
      Phone/FaceTime call-history database. Recent iOS backups often omit call \
@@ -126,6 +130,100 @@ pub struct CallLogLoadResult {
     pub source: String,
 }
 
+/// Restricts which call-history rows are loaded/exported, mirroring the message
+/// preview filters so the two stay in sync.
+///
+/// An empty filter (no addresses and no date bounds) matches every call, which
+/// is the "nothing selected => everything" behavior the message exporter uses.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct CallLogFilter {
+    /// Phone numbers / emails to include. Empty means "all addresses".
+    pub addresses: Vec<String>,
+    /// Inclusive lower bound, in nanoseconds since the Apple reference date
+    /// (2001-01-01), matching [`imessage_database::util::query_context::QueryContext`].
+    pub start: Option<i64>,
+    /// Exclusive upper bound, in the same units as `start`.
+    pub end: Option<i64>,
+}
+
+impl CallLogFilter {
+    /// Whether a call with the given `address` and timestamp passes the filter.
+    ///
+    /// `date_ns` is nanoseconds since the Apple reference date; `None` means the
+    /// row had no timestamp, in which case it only passes when no date bound is
+    /// set (the same way a message with no date is excluded by a date filter).
+    fn matches(&self, address: &str, date_ns: Option<i64>) -> bool {
+        self.matches_address(address) && self.matches_date(date_ns)
+    }
+
+    fn matches_address(&self, address: &str) -> bool {
+        self.addresses.is_empty()
+            || self
+                .addresses
+                .iter()
+                .any(|wanted| addresses_match(wanted, address))
+    }
+
+    fn matches_date(&self, date_ns: Option<i64>) -> bool {
+        match date_ns {
+            Some(ns) => {
+                self.start.is_none_or(|start| ns >= start) && self.end.is_none_or(|end| ns < end)
+            }
+            None => self.start.is_none() && self.end.is_none(),
+        }
+    }
+}
+
+/// Minimum digit count before two phone numbers are compared by suffix, to avoid
+/// short-number false positives (e.g. a 3-digit short code matching everything).
+const PHONE_MIN_SIGNIFICANT_DIGITS: usize = 7;
+/// Maximum digits compared, so different country-code prefixes still match the
+/// same national number (e.g. `+1 805 555 0100` vs `805 555 0100`).
+const PHONE_MAX_COMPARE_DIGITS: usize = 10;
+
+/// Loosely compare two call addresses. Emails compare case-insensitively;
+/// phone numbers compare by their trailing significant digits so formatting and
+/// country-code differences do not prevent a match.
+fn addresses_match(a: &str, b: &str) -> bool {
+    let a = a.trim();
+    let b = b.trim();
+    if a.is_empty() || b.is_empty() {
+        return false;
+    }
+    if a.eq_ignore_ascii_case(b) {
+        return true;
+    }
+    if a.contains('@') || b.contains('@') {
+        return a.eq_ignore_ascii_case(b);
+    }
+
+    let da: String = a.chars().filter(char::is_ascii_digit).collect();
+    let db: String = b.chars().filter(char::is_ascii_digit).collect();
+    if da.is_empty() || db.is_empty() {
+        return false;
+    }
+    let compare = da.len().min(db.len());
+    if compare < PHONE_MIN_SIGNIFICANT_DIGITS {
+        return da == db;
+    }
+    let compare = compare.min(PHONE_MAX_COMPARE_DIGITS);
+    da[da.len() - compare..] == db[db.len() - compare..]
+}
+
+/// Convert an Apple Core Data timestamp (seconds since 2001) to nanoseconds
+/// since the same reference, matching `QueryContext` units.
+fn call_date_ns(seconds_since_reference: Option<f64>) -> Option<i64> {
+    let seconds = seconds_since_reference?;
+    if !seconds.is_finite() {
+        return None;
+    }
+    let nanos = seconds * TIMESTAMP_FACTOR as f64;
+    if nanos < i64::MIN as f64 || nanos > i64::MAX as f64 {
+        return None;
+    }
+    Some(nanos.round() as i64)
+}
+
 #[derive(Clone, Copy, Debug)]
 struct CallHistorySource {
     label: &'static str,
@@ -177,6 +275,7 @@ struct RawCallLogRow {
 pub fn load(
     config: &Config,
     backup_root: &Path,
+    filter: &CallLogFilter,
     limit: Option<usize>,
 ) -> Result<CallLogLoadResult, RuntimeError> {
     if config.options.platform != Platform::iOS {
@@ -185,10 +284,19 @@ pub fn load(
         ));
     }
 
-    load_from_backup(backup_root, config.data_source.backup.as_ref(), limit)
+    load_from_backup(
+        backup_root,
+        config.data_source.backup.as_ref(),
+        filter,
+        limit,
+    )
 }
 
-pub fn load_from_options(options: &Options) -> Result<CallLogLoadResult, RuntimeError> {
+pub fn load_from_options(
+    options: &Options,
+    filter: &CallLogFilter,
+    limit: Option<usize>,
+) -> Result<CallLogLoadResult, RuntimeError> {
     if options.platform != Platform::iOS {
         return Err(call_log_error(
             "Call logs are available from iOS backup folders only.",
@@ -196,16 +304,17 @@ pub fn load_from_options(options: &Options) -> Result<CallLogLoadResult, Runtime
     }
 
     let backup = decrypt_backup(options)?;
-    load_from_backup(&options.db_path, backup.as_ref(), options.call_log_limit)
+    load_from_backup(&options.db_path, backup.as_ref(), filter, limit)
 }
 
 fn load_from_backup(
     backup_root: &Path,
     backup: Option<&Backup>,
+    filter: &CallLogFilter,
     limit: Option<usize>,
 ) -> Result<CallLogLoadResult, RuntimeError> {
     let materialized = materialize_call_history(backup_root, backup)?;
-    let (entries, total) = collect_call_logs_from_db(&materialized.db_path, limit)?;
+    let (entries, total) = collect_call_logs_from_db(&materialized.db_path, filter, limit)?;
 
     Ok(CallLogLoadResult {
         entries,
@@ -214,20 +323,48 @@ fn load_from_backup(
     })
 }
 
-pub fn export_csv_from_options(
+/// Build a [`CallLogFilter`] from CLI/runtime [`Options`]: the `-t` participant
+/// list becomes the address set and the date range carries straight over.
+fn filter_from_options(options: &Options) -> CallLogFilter {
+    let addresses = options
+        .conversation_filter
+        .as_deref()
+        .map(|text| {
+            text.split(',')
+                .map(str::trim)
+                .filter(|term| !term.is_empty())
+                .map(ToOwned::to_owned)
+                .collect()
+        })
+        .unwrap_or_default();
+
+    CallLogFilter {
+        addresses,
+        start: options.query_context.start,
+        end: options.query_context.end,
+    }
+}
+
+/// Decrypt the backup referenced by `options`, load its call history, and write
+/// it to `options.export_path` in the requested `format`.
+pub fn export_from_options(
     options: &Options,
+    format: CallLogFormat,
 ) -> Result<(PathBuf, CallLogLoadResult), RuntimeError> {
-    let path = call_log_csv_path(&options.export_path)?;
-    let result = load_from_options(options)?;
-    fs::write(&path, call_logs_csv(&result.entries))?;
+    let path = call_log_output_path(&options.export_path, format)?;
+    let filter = filter_from_options(options);
+    let result = load_from_options(options, &filter, options.call_log_limit)?;
+    write_call_logs(&result.entries, format, CALL_LOG_DOCUMENT_TITLE, &path)?;
     Ok((path, result))
 }
 
 pub fn export_csv(config: &Config) -> Result<(PathBuf, CallLogLoadResult), RuntimeError> {
     let path = call_log_csv_path(&config.options.export_path)?;
+    let filter = filter_from_options(&config.options);
     let result = load(
         config,
         &config.options.db_path,
+        &filter,
         config.options.call_log_limit,
     )?;
     fs::write(&path, call_logs_csv(&result.entries))?;
@@ -235,8 +372,15 @@ pub fn export_csv(config: &Config) -> Result<(PathBuf, CallLogLoadResult), Runti
 }
 
 fn call_log_csv_path(export_path: &Path) -> Result<PathBuf, RuntimeError> {
+    call_log_output_path(export_path, CallLogFormat::Csv)
+}
+
+fn call_log_output_path(
+    export_path: &Path,
+    format: CallLogFormat,
+) -> Result<PathBuf, RuntimeError> {
     create_dir_all(export_path)?;
-    let path = export_path.join(DEFAULT_CALL_LOG_CSV_FILE_NAME);
+    let path = export_path.join(format.default_file_name());
 
     if path.exists() {
         return Err(call_log_error(format!(
@@ -292,6 +436,144 @@ fn csv_escape(field: &str) -> String {
         field.replace(CSV_QUOTE, CSV_QUOTE_ESCAPE)
     )
 }
+
+/// Output format for an exported call-history file.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CallLogFormat {
+    /// Comma-separated values, one call per row.
+    Csv,
+    /// A self-contained, styled HTML table (no external assets).
+    Html,
+    /// A paginated PDF table rendered in-process (no headless browser).
+    Pdf,
+}
+
+impl CallLogFormat {
+    /// The lowercase file extension for this format, without a leading dot.
+    #[must_use]
+    pub fn extension(self) -> &'static str {
+        match self {
+            CallLogFormat::Csv => "csv",
+            CallLogFormat::Html => "html",
+            CallLogFormat::Pdf => "pdf",
+        }
+    }
+
+    /// A human-facing label (e.g. for menus).
+    #[must_use]
+    pub fn label(self) -> &'static str {
+        match self {
+            CallLogFormat::Csv => "CSV",
+            CallLogFormat::Html => "HTML",
+            CallLogFormat::Pdf => "PDF",
+        }
+    }
+
+    /// The default `call_logs.<ext>` file name for this format.
+    #[must_use]
+    pub fn default_file_name(self) -> String {
+        format!("call_logs.{}", self.extension())
+    }
+}
+
+/// Write `entries` to `path` in the requested `format`.
+///
+/// `title` is used as the document heading for HTML and PDF output; it is
+/// ignored for CSV.
+pub fn write_call_logs(
+    entries: &[CallLogEntry],
+    format: CallLogFormat,
+    title: &str,
+    path: &Path,
+) -> Result<(), RuntimeError> {
+    match format {
+        CallLogFormat::Csv => fs::write(path, call_logs_csv(entries))?,
+        CallLogFormat::Html => fs::write(path, call_logs_html(entries, title))?,
+        CallLogFormat::Pdf => crate::exporters::pdf::render_call_logs(entries, title, path)
+            .map_err(RuntimeError::PdfError)?,
+    }
+    Ok(())
+}
+
+/// Render `entries` as a self-contained HTML document with a styled table.
+#[must_use]
+pub fn call_logs_html(entries: &[CallLogEntry], title: &str) -> String {
+    let mut rows = String::new();
+    for entry in entries {
+        let direction_class = match entry.direction {
+            CallDirection::Missed => "missed",
+            CallDirection::Outgoing => "outgoing",
+            CallDirection::Incoming => "incoming",
+            CallDirection::Blocked => "blocked",
+            CallDirection::Unknown => "unknown",
+        };
+        rows.push_str(&format!(
+            "<tr>\
+             <td class=\"started\">{}</td>\
+             <td class=\"direction {}\">{}</td>\
+             <td class=\"address\">{}</td>\
+             <td class=\"duration\">{}</td>\
+             <td class=\"service\">{}</td>\
+             <td class=\"type\">{}</td>\
+             </tr>\n",
+            html_escape(&entry.started),
+            direction_class,
+            html_escape(entry.direction.label()),
+            html_escape(&entry.address),
+            html_escape(&entry.duration),
+            html_escape(&entry.service),
+            html_escape(&entry.call_type),
+        ));
+    }
+
+    let heading = html_escape(title);
+    let count = entries.len();
+    let count_word = if count == 1 { "call" } else { "calls" };
+
+    format!(
+        "<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n<meta charset=\"UTF-8\">\n\
+         <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n\
+         <title>{heading}</title>\n<style>\n{CALL_LOG_HTML_STYLE}\n</style>\n</head>\n\
+         <body>\n<h1>{heading}</h1>\n<p class=\"summary\">{count} {count_word}</p>\n\
+         <table>\n<thead>\n<tr>\
+         <th>Started</th><th>Direction</th><th>Address</th>\
+         <th>Duration</th><th>Service</th><th>Type</th>\
+         </tr>\n</thead>\n<tbody>\n{rows}</tbody>\n</table>\n</body>\n</html>\n"
+    )
+}
+
+fn html_escape(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for ch in text.chars() {
+        match ch {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' => out.push_str("&quot;"),
+            '\'' => out.push_str("&#39;"),
+            _ => out.push(ch),
+        }
+    }
+    out
+}
+
+const CALL_LOG_HTML_STYLE: &str = "\
+:root { color-scheme: light; }
+body { font-family: -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
+    color: #1f242c; background: #f6f8fb; margin: 24px; }
+h1 { font-size: 20px; margin: 0 0 4px; }
+.summary { color: #535d6a; margin: 0 0 16px; font-size: 13px; }
+table { border-collapse: collapse; width: 100%; background: #fff;
+    box-shadow: 0 1px 2px rgba(0,0,0,0.06); }
+th, td { text-align: left; padding: 7px 12px; border-bottom: 1px solid #e3e8ef;
+    font-size: 13px; vertical-align: top; }
+th { background: #eef2f7; font-weight: 600; position: sticky; top: 0; }
+tbody tr:nth-child(even) { background: #f9fbfd; }
+td.address, td.duration { font-variant-numeric: tabular-nums; }
+td.direction { font-weight: 600; }
+td.direction.missed { color: #b22d2d; }
+td.direction.outgoing { color: #1d6fce; }
+td.direction.blocked { color: #ab6300; }";
 
 fn materialize_call_history(
     backup_root: &Path,
@@ -468,18 +750,21 @@ fn hex_digest(bytes: &[u8]) -> String {
 
 fn collect_call_logs_from_db(
     db_path: &Path,
+    filter: &CallLogFilter,
     limit: Option<usize>,
 ) -> Result<(Vec<CallLogEntry>, i64), RuntimeError> {
     let conn = Connection::open(db_path)
         .map_err(|why| call_log_error(format!("Could not open call-history database: {why}")))?;
     let schema = call_log_schema(&conn)?;
-    let total = call_log_count(&conn, &schema)?;
-    let limit_clause = if limit.is_some() { " LIMIT ?1" } else { "" };
+    // Rows are filtered in Rust (address matching needs loose phone-number
+    // comparison that is awkward in SQL), so we scan in date order and keep the
+    // matches. `total` is the number of matches, mirroring the message preview's
+    // "showing N of M matching" semantics; `limit` only caps what we retain.
     let sql = format!(
         "SELECT {id} AS row_id, {address} AS address, {date} AS started, \
          {duration} AS duration, {originated} AS originated, {answered} AS answered, \
          {call_type} AS call_type, {service} AS service, {flags} AS legacy_flags \
-         FROM {table} ORDER BY {order_by} DESC{limit_clause}",
+         FROM {table} ORDER BY {order_by} DESC",
         id = schema.id_expr,
         address = schema.address_expr,
         date = schema.date_expr,
@@ -496,23 +781,26 @@ fn collect_call_logs_from_db(
     let mut stmt = conn
         .prepare(&sql)
         .map_err(|why| call_log_error(format!("Could not prepare call-history query: {why}")))?;
-    let mut rows = match limit {
-        Some(limit) => stmt
-            .query([limit as i64])
-            .map_err(|why| call_log_error(format!("Could not query call history: {why}")))?,
-        None => stmt
-            .query([])
-            .map_err(|why| call_log_error(format!("Could not query call history: {why}")))?,
-    };
+    let mut rows = stmt
+        .query([])
+        .map_err(|why| call_log_error(format!("Could not query call history: {why}")))?;
 
     let mut entries = Vec::new();
+    let mut total: i64 = 0;
     while let Some(row) = rows
         .next()
         .map_err(|why| call_log_error(format!("Could not read call-history row: {why}")))?
     {
         let raw = raw_call_log_row(row)
             .map_err(|why| call_log_error(format!("Could not read call-history row: {why}")))?;
-        entries.push(call_log_entry_from_raw(raw));
+        let date_ns = call_date_ns(raw.date);
+        let entry = call_log_entry_from_raw(raw);
+        if filter.matches(&entry.address, date_ns) {
+            total += 1;
+            if limit.is_none_or(|max| entries.len() < max) {
+                entries.push(entry);
+            }
+        }
     }
 
     Ok((entries, total))
@@ -601,12 +889,6 @@ fn column_or_rowid(columns: &HashSet<String>, column: &'static str) -> &'static 
     } else {
         "ROWID"
     }
-}
-
-fn call_log_count(conn: &Connection, schema: &CallLogSchema) -> Result<i64, RuntimeError> {
-    let sql = format!("SELECT COUNT(*) FROM {}", schema.table);
-    conn.query_row(&sql, [], |row| row.get::<_, i64>(0))
-        .map_err(|why| call_log_error(format!("Could not count call-history rows: {why}")))
 }
 
 fn raw_call_log_row(row: &Row<'_>) -> rusqlite::Result<RawCallLogRow> {
@@ -717,9 +999,17 @@ fn service_label(service: Option<String>) -> String {
 }
 
 fn call_type_label(call_type: Option<i64>) -> String {
-    call_type
-        .map(|value| format!("{CALL_LOG_TYPE_PREFIX} {value}"))
-        .unwrap_or_else(|| CALL_LOG_NO_VALUE.to_string())
+    // `ZCALLTYPE` values observed in `CallHistory.storedata`:
+    //   1  -> cellular voice (Telephony)
+    //   8  -> FaceTime video
+    //   16 -> FaceTime audio
+    // Unknown values fall back to the raw `Type N` form so no data is hidden.
+    match call_type {
+        Some(CALL_TYPE_AUDIO | CALL_TYPE_FACETIME_AUDIO) => CALL_TYPE_AUDIO_LABEL.to_string(),
+        Some(CALL_TYPE_FACETIME_VIDEO) => CALL_TYPE_VIDEO_LABEL.to_string(),
+        Some(value) => format!("{CALL_LOG_TYPE_PREFIX} {value}"),
+        None => CALL_LOG_NO_VALUE.to_string(),
+    }
 }
 
 fn format_call_duration(duration: Option<f64>) -> String {
@@ -885,8 +1175,12 @@ mod tests {
         .expect("seed call-history db");
         drop(conn);
 
-        let (entries, total) = collect_call_logs_from_db(&path, Some(CALL_HISTORY_SOURCES.len()))
-            .expect("collect call logs");
+        let (entries, total) = collect_call_logs_from_db(
+            &path,
+            &CallLogFilter::default(),
+            Some(CALL_HISTORY_SOURCES.len()),
+        )
+        .expect("collect call logs");
         let _ = fs::remove_file(&path);
 
         assert_eq!(total, 2);
@@ -922,8 +1216,12 @@ mod tests {
         .expect("seed legacy call-history db");
         drop(conn);
 
-        let (entries, total) = collect_call_logs_from_db(&path, Some(CALL_HISTORY_SOURCES.len()))
-            .expect("collect legacy call logs");
+        let (entries, total) = collect_call_logs_from_db(
+            &path,
+            &CallLogFilter::default(),
+            Some(CALL_HISTORY_SOURCES.len()),
+        )
+        .expect("collect legacy call logs");
         let _ = fs::remove_file(&path);
 
         assert_eq!(total, 2);
@@ -931,6 +1229,86 @@ mod tests {
         assert_eq!(entries[0].direction, CallDirection::Blocked);
         assert_eq!(entries[1].direction, CallDirection::Outgoing);
         assert_eq!(entries[1].duration, "1:00:05");
+    }
+
+    fn seed_modern_call_history(name: &str) -> PathBuf {
+        let path = temp_test_db(name);
+        let conn = Connection::open(&path).expect("create call-history db");
+        conn.execute_batch(
+            "
+            CREATE TABLE ZCALLRECORD (
+                Z_PK INTEGER PRIMARY KEY,
+                ZADDRESS TEXT,
+                ZDATE REAL,
+                ZDURATION REAL,
+                ZORIGINATED INTEGER,
+                ZANSWERED INTEGER,
+                ZCALLTYPE INTEGER,
+                ZSERVICE_PROVIDER TEXT
+            );
+            INSERT INTO ZCALLRECORD
+                (Z_PK, ZADDRESS, ZDATE, ZDURATION, ZORIGINATED, ZANSWERED, ZCALLTYPE, ZSERVICE_PROVIDER)
+            VALUES
+                (1, '+15551230000', 700000000, 65, 1, 1, 1, 'com.apple.Telephony'),
+                (2, '+15557650000', 700000010, 0, 0, 0, 8, 'com.apple.facetime'),
+                (3, '+15551230000', 700000020, 12, 0, 1, 1, 'com.apple.Telephony');
+            ",
+        )
+        .expect("seed call-history db");
+        path
+    }
+
+    #[test]
+    fn address_filter_keeps_only_matching_numbers() {
+        let path = seed_modern_call_history("filter-address-call-history");
+        // Same national number, different formatting/country code than stored.
+        let filter = CallLogFilter {
+            addresses: vec!["(555) 123-0000".to_string()],
+            ..Default::default()
+        };
+        let (entries, total) =
+            collect_call_logs_from_db(&path, &filter, None).expect("collect filtered");
+        let _ = fs::remove_file(&path);
+
+        assert_eq!(total, 2, "two calls share that number");
+        assert!(entries.iter().all(|e| e.address == "+15551230000"));
+    }
+
+    #[test]
+    fn date_filter_narrows_call_window_and_limit_caps_results() {
+        let path = seed_modern_call_history("filter-date-call-history");
+        // ZDATE is seconds since 2001; QueryContext units are nanoseconds.
+        let filter = CallLogFilter {
+            addresses: Vec::new(),
+            start: Some(700_000_005 * TIMESTAMP_FACTOR),
+            end: None,
+        };
+        let (entries, total) =
+            collect_call_logs_from_db(&path, &filter, Some(1)).expect("collect filtered");
+        let _ = fs::remove_file(&path);
+
+        // Two of the three calls are on/after the start; limit keeps just one.
+        assert_eq!(total, 2);
+        assert_eq!(entries.len(), 1);
+    }
+
+    #[test]
+    fn unrestricted_filter_matches_everything() {
+        let filter = CallLogFilter::default();
+        assert!(filter.matches("+15550000000", Some(0)));
+        assert!(filter.matches("anyone@example.com", None));
+    }
+
+    #[test]
+    fn addresses_match_handles_phones_and_emails() {
+        assert!(addresses_match("+1 (805) 555-0100", "8055550100"));
+        assert!(addresses_match("18055550100", "+18055550100"));
+        assert!(!addresses_match("8055550100", "8055550199"));
+        assert!(addresses_match("Person@Example.com", "person@example.com"));
+        assert!(!addresses_match("a@example.com", "b@example.com"));
+        // Short codes must match exactly, never by loose suffix.
+        assert!(addresses_match("611", "611"));
+        assert!(!addresses_match("611", "9611"));
     }
 
     #[test]
@@ -948,5 +1326,88 @@ mod tests {
         assert!(csv.starts_with(CALL_LOG_CSV_HEADER));
         assert!(csv.contains("\" Smith, Jane \""));
         assert!(csv.contains("\"Type \"\"video\"\"\""));
+    }
+
+    fn sample_entries() -> Vec<CallLogEntry> {
+        vec![
+            CallLogEntry {
+                id: 1,
+                started: "Jun 04, 2026  1:02:03 PM".to_string(),
+                direction: CallDirection::Missed,
+                address: "+15551234567".to_string(),
+                duration: "0:00".to_string(),
+                service: "Phone".to_string(),
+                call_type: "Audio".to_string(),
+            },
+            CallLogEntry {
+                id: 2,
+                started: "Jun 05, 2026  9:00:00 AM".to_string(),
+                direction: CallDirection::Outgoing,
+                address: "<script>&\"'".to_string(),
+                duration: "1:23".to_string(),
+                service: "FaceTime".to_string(),
+                call_type: "Video".to_string(),
+            },
+        ]
+    }
+
+    #[test]
+    fn call_type_label_maps_known_values_and_preserves_unknown() {
+        assert_eq!(call_type_label(Some(CALL_TYPE_AUDIO)), "Audio");
+        assert_eq!(call_type_label(Some(CALL_TYPE_FACETIME_VIDEO)), "Video");
+        assert_eq!(call_type_label(Some(CALL_TYPE_FACETIME_AUDIO)), "Audio");
+        assert_eq!(call_type_label(Some(99)), "Type 99");
+        assert_eq!(call_type_label(None), CALL_LOG_NO_VALUE);
+    }
+
+    #[test]
+    fn call_log_format_metadata_is_consistent() {
+        for format in [CallLogFormat::Csv, CallLogFormat::Html, CallLogFormat::Pdf] {
+            assert!(
+                format
+                    .default_file_name()
+                    .ends_with(&format!(".{}", format.extension()))
+            );
+            assert!(!format.label().is_empty());
+        }
+        assert_eq!(CallLogFormat::Html.extension(), "html");
+        assert_eq!(CallLogFormat::Pdf.default_file_name(), "call_logs.pdf");
+    }
+
+    #[test]
+    fn html_export_is_structured_and_escapes_user_data() {
+        let html = call_logs_html(&sample_entries(), "Call History - Test <Device>");
+
+        assert!(html.starts_with("<!DOCTYPE html>"));
+        assert!(html.contains("<th>Started</th>"));
+        assert!(html.contains("<th>Type</th>"));
+        // Title and cell content are HTML-escaped, never raw.
+        assert!(html.contains("Call History - Test &lt;Device&gt;"));
+        assert!(html.contains("&lt;script&gt;&amp;&quot;&#39;"));
+        assert!(!html.contains("<script>"));
+        // Direction drives a CSS class for styling.
+        assert!(html.contains("class=\"direction missed\""));
+        assert!(html.contains("2 calls"));
+    }
+
+    #[test]
+    fn write_call_logs_produces_a_file_for_every_format() {
+        let dir = temp_test_dir("call-log-export-formats");
+        let entries = sample_entries();
+        for format in [CallLogFormat::Csv, CallLogFormat::Html, CallLogFormat::Pdf] {
+            let path = dir.join(format.default_file_name());
+            write_call_logs(&entries, format, "Call History", &path)
+                .unwrap_or_else(|why| panic!("write {} failed: {why}", format.label()));
+            let bytes = fs::read(&path).expect("read exported file");
+            assert!(
+                !bytes.is_empty(),
+                "{} export should not be empty",
+                format.label()
+            );
+            if format == CallLogFormat::Pdf {
+                assert!(bytes.starts_with(b"%PDF"), "PDF should have a PDF header");
+            }
+        }
+        let _ = fs::remove_dir_all(&dir);
     }
 }
