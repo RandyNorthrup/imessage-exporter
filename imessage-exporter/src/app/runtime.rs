@@ -84,6 +84,10 @@ pub struct Config {
     /// Optional cancellation callback for front-ends that need to stop an
     /// in-flight export. Headless/CLI exports leave this unset.
     pub cancel_callback: Option<CancelCallback>,
+    /// When `true`, [`Config::who`] labels participants with their raw handle
+    /// (phone number / email) instead of a resolved contact name. Front-ends use
+    /// this to toggle the preview between names and numbers; defaults to `false`.
+    pub prefer_handle_id: bool,
 }
 
 impl Config {
@@ -353,6 +357,7 @@ impl Config {
             data_source,
             progress_callback: None,
             cancel_callback: None,
+            prefer_handle_id: false,
         })
     }
 
@@ -731,6 +736,9 @@ impl Config {
             return self.options.custom_name.as_deref().unwrap_or(ME);
         } else if let Some(handle_id) = handle_id {
             return match self.resolve_participant(handle_id) {
+                Some(contact) if self.prefer_handle_id && !contact.details.is_empty() => {
+                    &contact.details
+                }
                 Some(contact) => contact.get_display_name(),
                 None => UNKNOWN,
             };
@@ -766,6 +774,7 @@ impl Config {
             data_source,
             progress_callback: None,
             cancel_callback: None,
+            prefer_handle_id: false,
         }
     }
 

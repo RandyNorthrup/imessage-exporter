@@ -174,6 +174,7 @@ pub struct App {
 
     // Conversation list sorting
     sort_by_count: bool,
+    show_numbers: bool,
 
     // Progress / results / log
     busy: bool,
@@ -267,6 +268,7 @@ impl App {
             call_log_note: String::new(),
             call_log_format: s.call_log_format.into(),
             sort_by_count: s.sort_by_count,
+            show_numbers: false,
             busy: false,
             busy_label: String::new(),
             progress: None,
@@ -671,6 +673,18 @@ impl App {
         }
     }
 
+    /// Apply the names/numbers toggle: tell the backend, then refresh whatever is
+    /// currently displayed (the conversation preview and/or the call logs).
+    fn apply_show_numbers(&mut self) {
+        self.send_command(Command::SetShowNumbers(self.show_numbers), "set label mode");
+        if let Some(id) = self.previewed_conversation {
+            self.do_preview_conversation(id);
+        }
+        if !self.call_logs.is_empty() {
+            self.do_load_call_logs();
+        }
+    }
+
     fn do_html_preview(&mut self) {
         match self.build_filters() {
             Ok(filters) => {
@@ -1046,6 +1060,13 @@ impl App {
                     });
                 });
 
+                // On the Call Logs tab, the sidebar also hosts the call-log
+                // load/export controls (the conversation list below filters them).
+                if self.active_tab == ActiveTab::CallLogs {
+                    self.call_log_controls(ui);
+                    theme::inline_separator(ui);
+                }
+
                 theme::control_row(ui, |ui| {
                     theme::field_label(ui, "Search");
                     theme::add_text_field(
@@ -1077,6 +1098,15 @@ impl App {
                 theme::control_row(ui, |ui| {
                     theme::field_label(ui, "");
                     theme::checkbox(ui, &mut self.sort_by_count, "Sort by count");
+                    if theme::checkbox(ui, &mut self.show_numbers, "Show numbers")
+                        .on_hover_text(
+                            "Label people by phone number/email instead of contact name, \
+                             in the preview and call logs",
+                        )
+                        .changed()
+                    {
+                        self.apply_show_numbers();
+                    }
                 });
                 if self.selected.is_empty() {
                     ui.label(theme::small_muted_text(
@@ -1567,20 +1597,26 @@ impl App {
                 ui.label(theme::muted_text(&self.call_log_note));
             }
         });
+        // The load/export controls live in the left sidebar on this tab; the
+        // central area is just the table.
+        self.call_log_table(ui);
+    }
+
+    /// Call-log load and export controls, shown in the left sidebar while the
+    /// Call Logs tab is active (the conversation list above filters them).
+    fn call_log_controls(&mut self, ui: &mut egui::Ui) {
+        theme::group_header(ui, "Call logs");
+        let enabled =
+            self.opened && self.opened_platform == Some(PlatformChoice::IOS) && !self.busy;
 
         theme::control_row(ui, |ui| {
-            theme::field_label(ui, "Actions");
-            let load_enabled =
-                self.opened && self.opened_platform == Some(PlatformChoice::IOS) && !self.busy;
-            if theme::add_enabled_button(ui, load_enabled, "Load call logs").clicked() {
+            if theme::add_enabled_button(ui, enabled, "Load call logs").clicked() {
                 self.do_load_call_logs();
             }
         });
 
         theme::control_row(ui, |ui| {
             theme::field_label(ui, "Export as");
-            let export_enabled =
-                self.opened && self.opened_platform == Some(PlatformChoice::IOS) && !self.busy;
             let format_combo = egui::ComboBox::from_id_salt("call_log_format")
                 .width(layout::FORMAT_WIDTH)
                 .selected_text(self.call_log_format.label())
@@ -1590,15 +1626,10 @@ impl App {
                     }
                 });
             theme::paint_dropdown_border(ui, &format_combo.response);
-            if theme::add_enabled_button(ui, export_enabled, "Export...").clicked() {
+            if theme::add_enabled_button(ui, enabled, "Export...").clicked() {
                 self.export_call_logs();
             }
         });
-
-        ui.label(theme::small_muted_text(
-            "Call logs use the same conversation and date filters as the message preview. \
-             With nothing selected, all calls are included; the export always covers the full filtered set.",
-        ));
 
         if self.opened && self.opened_platform != Some(PlatformChoice::IOS) {
             ui.label(theme::small_muted_text(
@@ -1608,10 +1639,11 @@ impl App {
             ui.label(theme::small_muted_text(
                 "Open an iOS backup folder, then load call logs.",
             ));
+        } else {
+            ui.label(theme::small_muted_text(
+                "Filtered by the conversations and dates selected above.",
+            ));
         }
-
-        theme::inline_separator(ui);
-        self.call_log_table(ui);
     }
 
     fn call_log_table(&mut self, ui: &mut egui::Ui) {

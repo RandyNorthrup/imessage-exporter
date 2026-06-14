@@ -71,6 +71,9 @@ pub enum Command {
         limit: usize,
     },
     ExportCallLogs(CallLogExportRequest),
+    /// Label participants by phone number/email (`true`) or contact name
+    /// (`false`) in subsequent previews, exports, and call-log views.
+    SetShowNumbers(bool),
     Shutdown,
 }
 
@@ -145,11 +148,23 @@ fn send(evt_tx: &Sender<Event>, ctx: &egui::Context, event: Event) {
 fn backend_loop(cmd_rx: &Receiver<Command>, evt_tx: &Sender<Event>, ctx: &egui::Context) {
     let mut config: Option<Config> = None;
     let mut opened_source: Option<OpenedSource> = None;
+    // Label participants by number (true) or contact name (false). Persisted
+    // across opens since opening rebuilds the config.
+    let mut show_numbers = false;
     while let Ok(cmd) = cmd_rx.recv() {
         match cmd {
             Command::Shutdown => break,
+            Command::SetShowNumbers(value) => {
+                show_numbers = value;
+                if let Some(config) = config.as_mut() {
+                    config.prefer_handle_id = value;
+                }
+            }
             Command::Open(params) => {
-                handle_open(&mut config, &mut opened_source, params, evt_tx, ctx)
+                handle_open(&mut config, &mut opened_source, params, evt_tx, ctx);
+                if let Some(config) = config.as_mut() {
+                    config.prefer_handle_id = show_numbers;
+                }
             }
             Command::Preview { filters, limit } => {
                 handle_preview(config.as_ref(), &filters, limit, evt_tx, ctx)
@@ -169,6 +184,7 @@ fn backend_loop(cmd_rx: &Receiver<Command>, evt_tx: &Sender<Event>, ctx: &egui::
                 opened_source.as_ref(),
                 &filters,
                 limit,
+                show_numbers,
                 evt_tx,
                 ctx,
             ),
@@ -482,6 +498,7 @@ fn handle_load_call_logs(
     source: Option<&OpenedSource>,
     filters: &Filters,
     limit: usize,
+    show_numbers: bool,
     evt_tx: &Sender<Event>,
     ctx: &egui::Context,
 ) {
@@ -499,16 +516,63 @@ fn handle_load_call_logs(
         }
     };
     match call_logs::load(config, &source.root_path, &filter, Some(limit)) {
-        Ok(result) => send(
-            evt_tx,
-            ctx,
-            Event::CallLogsLoaded {
-                entries: result.entries,
-                total: result.total,
-                source: result.source,
-            },
-        ),
+        Ok(mut result) => {
+            if !show_numbers {
+                resolve_call_log_names(config, &mut result.entries);
+            }
+            send(
+                evt_tx,
+                ctx,
+                Event::CallLogsLoaded {
+                    entries: result.entries,
+                    total: result.total,
+                    source: result.source,
+                },
+            );
+        }
         Err(why) => send(evt_tx, ctx, Event::CallLogsFailed(format!("{why}"))),
+    }
+}
+
+/// Replace each call-log `address` with the contact name when one is known,
+/// matching numbers loosely (trailing digits) and emails case-insensitively.
+fn resolve_call_log_names(config: &Config, entries: &mut [CallLogEntry]) {
+    let handle_addresses = Handle::cache(config.db()).unwrap_or_default();
+    let mut names: BTreeMap<String, String> = BTreeMap::new();
+    for (handle_id, number) in &handle_addresses {
+        let Some(internal) = config.real_participants.get(handle_id) else {
+            continue;
+        };
+        let Some(name) = config.participants.get(internal) else {
+            continue;
+        };
+        let display = name.get_display_name();
+        // Only map when a real contact name (not just the raw number) exists.
+        if !display.is_empty() && display != number {
+            names
+                .entry(contact_key(number))
+                .or_insert_with(|| display.to_string());
+        }
+    }
+    for entry in entries.iter_mut() {
+        if let Some(name) = names.get(&contact_key(&entry.address)) {
+            entry.address = name.clone();
+        }
+    }
+}
+
+/// A loose match key for an address: an email lowercased, or a phone number's
+/// trailing significant digits.
+fn contact_key(address: &str) -> String {
+    let trimmed = address.trim();
+    if trimmed.contains('@') {
+        return trimmed.to_ascii_lowercase();
+    }
+    let digits: String = trimmed.chars().filter(char::is_ascii_digit).collect();
+    if digits.len() > 10 {
+        digits[digits.len() - 10..].to_string()
+    } else {
+        digits
     }
 }
 
