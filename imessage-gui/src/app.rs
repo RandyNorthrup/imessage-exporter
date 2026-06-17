@@ -74,6 +74,83 @@ enum ActiveTab {
     CallLogs,
 }
 
+/// Sortable columns in the call-log table.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CallLogColumn {
+    Started,
+    Direction,
+    Address,
+    Duration,
+    Service,
+    Type,
+}
+
+impl CallLogColumn {
+    const ALL: [CallLogColumn; 6] = [
+        CallLogColumn::Started,
+        CallLogColumn::Direction,
+        CallLogColumn::Address,
+        CallLogColumn::Duration,
+        CallLogColumn::Service,
+        CallLogColumn::Type,
+    ];
+
+    fn label(self) -> &'static str {
+        match self {
+            CallLogColumn::Started => "Started",
+            CallLogColumn::Direction => "Direction",
+            CallLogColumn::Address => "Address",
+            CallLogColumn::Duration => "Duration",
+            CallLogColumn::Service => "Service",
+            CallLogColumn::Type => "Type",
+        }
+    }
+}
+
+/// Sort call-log rows in place by the chosen column and direction. `Started`
+/// sorts by the row id (a chronological proxy, since `started` is a display
+/// string), `Duration` sorts numerically, and the rest sort case-insensitively.
+fn sort_call_logs(entries: &mut [CallLogEntry], col: CallLogColumn, ascending: bool) {
+    entries.sort_by(|a, b| {
+        let ord = match col {
+            CallLogColumn::Started => a.id.cmp(&b.id),
+            CallLogColumn::Direction => a.direction.label().cmp(b.direction.label()),
+            CallLogColumn::Address => a.address.to_lowercase().cmp(&b.address.to_lowercase()),
+            CallLogColumn::Duration => duration_secs(&a.duration).cmp(&duration_secs(&b.duration)),
+            CallLogColumn::Service => a.service.to_lowercase().cmp(&b.service.to_lowercase()),
+            CallLogColumn::Type => a.call_type.to_lowercase().cmp(&b.call_type.to_lowercase()),
+        };
+        // Break ties by id so the order stays stable across re-sorts.
+        let ord = ord.then_with(|| a.id.cmp(&b.id));
+        if ascending {
+            ord
+        } else {
+            ord.reverse()
+        }
+    });
+}
+
+/// Parse a formatted call duration (`m:ss` or `h:mm:ss`) into seconds for
+/// numeric sorting. Non-numeric placeholders sort before any real duration.
+fn duration_secs(duration: &str) -> i64 {
+    let mut total: i64 = 0;
+    let mut any = false;
+    for part in duration.split(':') {
+        match part.trim().parse::<i64>() {
+            Ok(value) => {
+                total = total * 60 + value;
+                any = true;
+            }
+            Err(_) => return -1,
+        }
+    }
+    if any {
+        total
+    } else {
+        -1
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct ResolvedSource {
     path: PathBuf,
@@ -171,6 +248,8 @@ pub struct App {
     call_log_total: i64,
     call_log_note: String,
     call_log_format: CallLogFormat,
+    call_log_sort_col: CallLogColumn,
+    call_log_sort_asc: bool,
 
     // Conversation list sorting
     sort_by_count: bool,
@@ -267,6 +346,8 @@ impl App {
             call_log_total: 0,
             call_log_note: String::new(),
             call_log_format: s.call_log_format.into(),
+            call_log_sort_col: CallLogColumn::Started,
+            call_log_sort_asc: true,
             sort_by_count: s.sort_by_count,
             show_numbers: false,
             busy: false,
@@ -459,6 +540,11 @@ impl App {
                         source
                     );
                     self.call_logs = entries;
+                    sort_call_logs(
+                        &mut self.call_logs,
+                        self.call_log_sort_col,
+                        self.call_log_sort_asc,
+                    );
                     self.busy = false;
                     self.busy_label = format!("Loaded call logs: {}", self.call_log_note);
                     self.error = None;
@@ -534,6 +620,27 @@ impl App {
 
         Ok(Filters {
             selected_raw_chat_ids: selected_raw,
+            conversation_filter,
+            start_ns,
+            end_ns,
+        })
+    }
+
+    /// Filters for the call-logs view. The Call Logs tab hides the conversation
+    /// list, so call logs are filtered only by the participant box and the date
+    /// range; the conversation checkboxes drive message export, not call logs.
+    fn build_call_log_filters(&self) -> Result<Filters, String> {
+        let (start_ns, end_ns) = self.parse_date_bounds()?;
+        let conversation_filter = {
+            let t = self.participant_filter.trim();
+            if t.is_empty() {
+                None
+            } else {
+                Some(t.to_string())
+            }
+        };
+        Ok(Filters {
+            selected_raw_chat_ids: Vec::new(),
             conversation_filter,
             start_ns,
             end_ns,
@@ -773,6 +880,14 @@ impl App {
         self.start_enabled || self.end_enabled || !self.participant_filter.trim().is_empty()
     }
 
+    /// Entering the Call Logs tab auto-loads the call history when a compatible
+    /// backup is open, so there is no separate "Load" step.
+    fn enter_call_logs_tab(&mut self) {
+        if self.opened && self.opened_platform == Some(PlatformChoice::IOS) && !self.busy {
+            self.do_load_call_logs();
+        }
+    }
+
     fn do_load_call_logs(&mut self) {
         if !self.opened {
             self.error = Some("Open an iOS backup before loading call logs.".into());
@@ -783,7 +898,7 @@ impl App {
             return;
         }
 
-        match self.build_filters() {
+        match self.build_call_log_filters() {
             Ok(filters) => {
                 self.start_busy("Loading call logs ...");
                 self.send_command(
@@ -804,7 +919,7 @@ impl App {
             return;
         }
 
-        let filters = match self.build_filters() {
+        let filters = match self.build_call_log_filters() {
             Ok(filters) => filters,
             Err(e) => {
                 self.error = Some(e);
@@ -1050,136 +1165,245 @@ impl App {
             .default_width(layout::LEFT_PANEL_DEFAULT_WIDTH)
             .width_range(layout::LEFT_PANEL_MIN_WIDTH..=layout::LEFT_PANEL_MAX_WIDTH)
             .frame(theme::panel_frame())
-            .show(ctx, |ui| {
-                theme::panel_header(ui, "Conversations", |ui| {
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        ui.label(theme::muted_text(format!(
-                            "{} selected",
-                            self.selected.len()
-                        )));
-                    });
-                });
+            .show(ctx, |ui| match self.active_tab {
+                // Messages: the full conversation list (the export selection).
+                ActiveTab::Messages => self.conversation_panel(ui),
+                // Call logs: just the filters/search and export controls; the
+                // conversation list is hidden here.
+                ActiveTab::CallLogs => self.call_log_sidebar(ui),
+            });
+    }
 
-                // On the Call Logs tab, the sidebar also hosts the call-log
-                // load/export controls (the conversation list below filters them).
-                if self.active_tab == ActiveTab::CallLogs {
-                    self.call_log_controls(ui);
-                    theme::inline_separator(ui);
+    /// Messages-tab sidebar: search, selection, and the conversation list.
+    fn conversation_panel(&mut self, ui: &mut egui::Ui) {
+        theme::panel_header(ui, "Conversations", |ui| {
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.label(theme::muted_text(format!(
+                    "{} selected",
+                    self.selected.len()
+                )));
+            });
+        });
+
+        theme::control_row(ui, |ui| {
+            theme::field_label(ui, "Search");
+            theme::add_text_field(
+                ui,
+                &mut self.search,
+                layout::CONVERSATION_SEARCH_WIDTH,
+                "filter by name, number, or email",
+            );
+        });
+
+        let needle = self.search.trim().to_lowercase();
+        let matches = |c: &ConversationSummary| {
+            needle.is_empty()
+                || c.title.to_lowercase().contains(&needle)
+                || c.participants.to_lowercase().contains(&needle)
+        };
+
+        theme::control_row(ui, |ui| {
+            theme::field_label(ui, "Selection");
+            if theme::add_small_button(ui, "Select all").clicked() {
+                for c in self.conversations.iter().filter(|c| matches(c)) {
+                    self.selected.insert(c.id);
                 }
-
-                theme::control_row(ui, |ui| {
-                    theme::field_label(ui, "Search");
-                    theme::add_text_field(
-                        ui,
-                        &mut self.search,
-                        layout::CONVERSATION_SEARCH_WIDTH,
-                        "filter by name, number, or email",
-                    );
-                });
-
-                let needle = self.search.trim().to_lowercase();
-                let matches = |c: &ConversationSummary| {
-                    needle.is_empty()
-                        || c.title.to_lowercase().contains(&needle)
-                        || c.participants.to_lowercase().contains(&needle)
-                };
-
-                theme::control_row(ui, |ui| {
-                    theme::field_label(ui, "Selection");
-                    if theme::add_small_button(ui, "Select all").clicked() {
-                        for c in self.conversations.iter().filter(|c| matches(c)) {
-                            self.selected.insert(c.id);
-                        }
-                    }
-                    if theme::add_small_button(ui, "Clear").clicked() {
-                        self.selected.clear();
-                    }
-                });
-                theme::control_row(ui, |ui| {
-                    theme::field_label(ui, "");
-                    theme::checkbox(ui, &mut self.sort_by_count, "Sort by count");
-                    if theme::checkbox(ui, &mut self.show_numbers, "Show numbers")
-                        .on_hover_text(
-                            "Label people by phone number/email instead of contact name, \
+            }
+            if theme::add_small_button(ui, "Clear").clicked() {
+                self.selected.clear();
+            }
+        });
+        theme::control_row(ui, |ui| {
+            theme::field_label(ui, "");
+            theme::checkbox(ui, &mut self.sort_by_count, "Sort by count");
+            if theme::checkbox(ui, &mut self.show_numbers, "Show numbers")
+                .on_hover_text(
+                    "Label people by phone number/email instead of contact name, \
                              in the preview and call logs",
-                        )
-                        .changed()
-                    {
-                        self.apply_show_numbers();
-                    }
-                });
-                if self.selected.is_empty() {
-                    ui.label(theme::small_muted_text(
-                        "(none selected = all conversations)",
-                    ));
+                )
+                .changed()
+            {
+                self.apply_show_numbers();
+            }
+        });
+        if self.selected.is_empty() {
+            ui.label(theme::small_muted_text(
+                "(none selected = all conversations)",
+            ));
+        }
+
+        theme::inline_separator(ui);
+
+        egui::ScrollArea::vertical()
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                if self.conversations.is_empty() {
+                    ui.label(theme::muted_text("Open a source to list conversations."));
                 }
-
-                theme::inline_separator(ui);
-
-                egui::ScrollArea::vertical()
-                    .auto_shrink([false, false])
-                    .show(ui, |ui| {
-                        if self.conversations.is_empty() {
-                            ui.label(theme::muted_text("Open a source to list conversations."));
-                        }
-                        // Collect first to avoid borrowing self while mutating selection.
-                        let mut visible: Vec<(i32, String, String, i64)> = self
-                            .conversations
-                            .iter()
-                            .filter(|c| matches(c))
-                            .map(|c| {
-                                (
-                                    c.id,
-                                    c.title.clone(),
-                                    c.participants.clone(),
-                                    c.message_count,
-                                )
-                            })
-                            .collect();
-                        if self.sort_by_count {
-                            visible.sort_by_key(|item| Reverse(item.3));
-                        }
-                        let mut preview_click: Option<i32> = None;
-                        for (id, title, participants, count) in visible {
-                            let mut checked = self.selected.contains(&id);
-                            let is_active = self.previewed_conversation == Some(id);
-                            // Checkbox (export selection) top-aligned to the first
-                            // line; clicking the name loads that conversation's
-                            // preview.
-                            ui.horizontal_top(|ui| {
-                                theme::checkbox(ui, &mut checked, "");
-                                let mut text = egui::RichText::new(format!("{title}  -  {count}"));
-                                if is_active {
-                                    text = text.strong();
-                                }
-                                let resp = ui
-                                    .add(egui::Label::new(text).sense(egui::Sense::click()).wrap())
-                                    .on_hover_cursor(egui::CursorIcon::PointingHand);
-                                if resp.clicked() {
-                                    preview_click = Some(id);
-                                }
-                                if !participants.is_empty() && participants != title {
-                                    resp.on_hover_text(format!("{participants}\n{count} messages"));
-                                }
-                            });
-                            if checked {
-                                self.selected.insert(id);
-                            } else {
-                                self.selected.remove(&id);
+                // Collect first to avoid borrowing self while mutating selection.
+                let mut visible: Vec<(i32, String, String, i64)> = self
+                    .conversations
+                    .iter()
+                    .filter(|c| matches(c))
+                    .map(|c| {
+                        (
+                            c.id,
+                            c.title.clone(),
+                            c.participants.clone(),
+                            c.message_count,
+                        )
+                    })
+                    .collect();
+                if self.sort_by_count {
+                    visible.sort_by_key(|item| Reverse(item.3));
+                }
+                let mut preview_click: Option<i32> = None;
+                for (id, title, participants, count) in visible {
+                    let mut checked = self.selected.contains(&id);
+                    let is_active = self.previewed_conversation == Some(id);
+                    // The previewed conversation is highlighted with the
+                    // selection color so the chosen number stands out.
+                    theme::conversation_row_frame(is_active).show(ui, |ui| {
+                        // Checkbox (export selection) top-aligned to the
+                        // first line; clicking the name loads that
+                        // conversation's preview.
+                        ui.horizontal_top(|ui| {
+                            theme::checkbox(ui, &mut checked, "");
+                            let text = theme::conversation_row_text(
+                                format!("{title}  -  {count}"),
+                                is_active,
+                            );
+                            let resp = ui
+                                .add(egui::Label::new(text).sense(egui::Sense::click()).wrap())
+                                .on_hover_cursor(egui::CursorIcon::PointingHand);
+                            if resp.clicked() {
+                                preview_click = Some(id);
                             }
-                        }
-                        if let Some(id) = preview_click {
-                            self.previewed_conversation = Some(id);
-                            self.do_preview_conversation(id);
-                        }
+                            if !participants.is_empty() && participants != title {
+                                resp.on_hover_text(format!("{participants}\n{count} messages"));
+                            }
+                        });
                     });
-
-                if let Some((first, last)) = &self.date_range {
-                    theme::group_gap(ui);
-                    theme::group_header(ui, "Database date range");
-                    ui.label(theme::small_muted_text(format!("{first}\nto {last}")));
+                    if checked {
+                        self.selected.insert(id);
+                    } else {
+                        self.selected.remove(&id);
+                    }
+                }
+                if let Some(id) = preview_click {
+                    self.previewed_conversation = Some(id);
+                    self.do_preview_conversation(id);
                 }
             });
+
+        if let Some((first, last)) = &self.date_range {
+            theme::group_gap(ui);
+            theme::group_header(ui, "Database date range");
+            ui.label(theme::small_muted_text(format!("{first}\nto {last}")));
+        }
+    }
+
+    /// Call-logs-tab sidebar: the filters (date range and participant box), the
+    /// names/numbers toggle, and the export controls. The conversation list is
+    /// intentionally hidden here -- call logs are filtered by the participant box
+    /// and dates, and auto-load when the tab is opened.
+    fn call_log_sidebar(&mut self, ui: &mut egui::Ui) {
+        theme::panel_header(ui, "Call Logs", |ui| {
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if !self.call_logs.is_empty() {
+                    ui.label(theme::muted_text(format!("{} shown", self.call_logs.len())));
+                }
+            });
+        });
+
+        let enabled =
+            self.opened && self.opened_platform == Some(PlatformChoice::IOS) && !self.busy;
+        let mut reload = false;
+
+        theme::group_header(ui, "Filters");
+        theme::control_row(ui, |ui| {
+            theme::field_label(ui, "Date range");
+            if theme::checkbox(ui, &mut self.start_enabled, "From").changed() {
+                reload = true;
+            }
+            ui.add_enabled_ui(self.start_enabled, |ui| {
+                let d = theme::add_text_field(
+                    ui,
+                    &mut self.start_date,
+                    layout::DATE_FIELD_WIDTH,
+                    "YYYY-MM-DD",
+                );
+                let t = theme::add_text_field(
+                    ui,
+                    &mut self.start_time,
+                    layout::TIME_FIELD_WIDTH,
+                    "HH:MM",
+                );
+                if (d.lost_focus() && d.changed()) || (t.lost_focus() && t.changed()) {
+                    reload = true;
+                }
+            });
+            if theme::checkbox(ui, &mut self.end_enabled, "To").changed() {
+                reload = true;
+            }
+            ui.add_enabled_ui(self.end_enabled, |ui| {
+                let d = theme::add_text_field(
+                    ui,
+                    &mut self.end_date,
+                    layout::DATE_FIELD_WIDTH,
+                    "YYYY-MM-DD",
+                );
+                let t = theme::add_text_field(
+                    ui,
+                    &mut self.end_time,
+                    layout::TIME_FIELD_WIDTH,
+                    "HH:MM",
+                );
+                if (d.lost_focus() && d.changed()) || (t.lost_focus() && t.changed()) {
+                    reload = true;
+                }
+            });
+        });
+        theme::control_row(ui, |ui| {
+            theme::field_label(ui, "Participants");
+            let resp = theme::add_text_field(
+                ui,
+                &mut self.participant_filter,
+                layout::PARTICIPANT_FILTER_WIDTH,
+                "name,number,email",
+            )
+            .on_hover_text(
+                "Comma-separated. Only calls to/from these numbers or emails are shown; \
+                 empty shows every call.",
+            );
+            if resp.lost_focus() && resp.changed() {
+                reload = true;
+            }
+        });
+        theme::control_row(ui, |ui| {
+            theme::field_label(ui, "");
+            if theme::checkbox(ui, &mut self.show_numbers, "Show numbers")
+                .on_hover_text("Label callers by phone number/email instead of contact name")
+                .changed()
+            {
+                // `apply_show_numbers` re-runs the call-log load itself.
+                self.apply_show_numbers();
+            }
+        });
+
+        theme::inline_separator(ui);
+
+        self.call_log_controls(ui);
+
+        if let Some((first, last)) = &self.date_range {
+            theme::group_gap(ui);
+            theme::group_header(ui, "Database date range");
+            ui.label(theme::small_muted_text(format!("{first}\nto {last}")));
+        }
+
+        if reload && enabled {
+            self.do_load_call_logs();
+        }
     }
 
     fn backup_picker_window(&mut self, ctx: &egui::Context) {
@@ -1540,8 +1764,10 @@ impl App {
             }
             if theme::add_tab_button(ui, self.active_tab == ActiveTab::CallLogs, "Call logs")
                 .clicked()
+                && self.active_tab != ActiveTab::CallLogs
             {
                 self.active_tab = ActiveTab::CallLogs;
+                self.enter_call_logs_tab();
             }
 
             // On the Messages tab, a toggle on the right collapses the export
@@ -1602,18 +1828,13 @@ impl App {
         self.call_log_table(ui);
     }
 
-    /// Call-log load and export controls, shown in the left sidebar while the
-    /// Call Logs tab is active (the conversation list above filters them).
+    /// Call-log export controls (format + export), shown in the left sidebar
+    /// while the Call Logs tab is active. The filters above drive what is
+    /// exported; the table itself auto-loads when the tab is opened.
     fn call_log_controls(&mut self, ui: &mut egui::Ui) {
-        theme::group_header(ui, "Call logs");
+        theme::group_header(ui, "Export");
         let enabled =
             self.opened && self.opened_platform == Some(PlatformChoice::IOS) && !self.busy;
-
-        theme::control_row(ui, |ui| {
-            if theme::add_enabled_button(ui, enabled, "Load call logs").clicked() {
-                self.do_load_call_logs();
-            }
-        });
 
         theme::control_row(ui, |ui| {
             theme::field_label(ui, "Export as");
@@ -1631,22 +1852,23 @@ impl App {
             }
         });
 
-        if self.opened && self.opened_platform != Some(PlatformChoice::IOS) {
+        if !self.opened || self.opened_platform != Some(PlatformChoice::IOS) {
             ui.label(theme::small_muted_text(
                 "Open an iOS backup folder to read call history.",
             ));
-        } else if !self.opened {
-            ui.label(theme::small_muted_text(
-                "Open an iOS backup folder, then load call logs.",
-            ));
         } else {
             ui.label(theme::small_muted_text(
-                "Filtered by the conversations and dates selected above.",
+                "Filtered by the participants and dates above.",
             ));
         }
     }
 
     fn call_log_table(&mut self, ui: &mut egui::Ui) {
+        // Rows are kept sorted on load and whenever a header is clicked, so the
+        // table itself just reads the current order.
+        let sort_col = self.call_log_sort_col;
+        let sort_asc = self.call_log_sort_asc;
+        let mut header_clicked: Option<CallLogColumn> = None;
         theme::fixed_height_area(ui, ui.available_height(), |ui| {
             if self.call_logs.is_empty() {
                 theme::centered_preview_message(ui, "No call logs loaded.");
@@ -1665,12 +1887,31 @@ impl App {
                         ))
                         .min_col_width(layout::CALL_LOG_MIN_COLUMN_WIDTH)
                         .show(ui, |ui| {
-                            ui.label(theme::strong_small_text("Started"));
-                            ui.label(theme::strong_small_text("Direction"));
-                            ui.label(theme::strong_small_text("Address"));
-                            ui.label(theme::strong_small_text("Duration"));
-                            ui.label(theme::strong_small_text("Service"));
-                            ui.label(theme::strong_small_text("Type"));
+                            // Clickable headers: click to sort, click again to
+                            // flip the direction. The active column shows an
+                            // ASCII arrow.
+                            for col in CallLogColumn::ALL {
+                                let arrow = if sort_col == col {
+                                    if sort_asc {
+                                        " ^"
+                                    } else {
+                                        " v"
+                                    }
+                                } else {
+                                    ""
+                                };
+                                let label = format!("{}{arrow}", col.label());
+                                let resp = ui
+                                    .add(
+                                        egui::Label::new(theme::strong_small_text(label))
+                                            .sense(egui::Sense::click()),
+                                    )
+                                    .on_hover_cursor(egui::CursorIcon::PointingHand)
+                                    .on_hover_text("Click to sort by this column");
+                                if resp.clicked() {
+                                    header_clicked = Some(col);
+                                }
+                            }
                             ui.end_row();
 
                             for entry in &self.call_logs {
@@ -1685,6 +1926,20 @@ impl App {
                         });
                 });
         });
+
+        if let Some(col) = header_clicked {
+            if self.call_log_sort_col == col {
+                self.call_log_sort_asc = !self.call_log_sort_asc;
+            } else {
+                self.call_log_sort_col = col;
+                self.call_log_sort_asc = true;
+            }
+            sort_call_logs(
+                &mut self.call_logs,
+                self.call_log_sort_col,
+                self.call_log_sort_asc,
+            );
+        }
     }
 
     fn preview_contents(&mut self, ui: &mut egui::Ui) {
@@ -2382,5 +2637,79 @@ mod tests {
 
         assert!(note.contains("No iOS backups found"));
         assert!(note.contains(BACKUP_SCAN_STORE_WINDOWS_SOURCE));
+    }
+
+    fn call_entry(id: i64, address: &str, duration: &str) -> CallLogEntry {
+        use imessage_exporter::app::call_logs::CallDirection;
+        CallLogEntry {
+            id,
+            started: format!("row {id}"),
+            direction: CallDirection::Incoming,
+            address: address.to_string(),
+            duration: duration.to_string(),
+            service: "iMessage".to_string(),
+            call_type: "Audio".to_string(),
+        }
+    }
+
+    #[test]
+    fn duration_secs_parses_minutes_and_hours() {
+        assert_eq!(duration_secs("0:00"), 0);
+        assert_eq!(duration_secs("0:30"), 30);
+        assert_eq!(duration_secs("1:23"), 83);
+        assert_eq!(duration_secs("1:02:03"), 3723);
+        // Non-numeric placeholders sort before any real duration.
+        assert_eq!(duration_secs("--"), -1);
+    }
+
+    #[test]
+    fn sort_call_logs_by_started_uses_id_order() {
+        let mut entries = vec![
+            call_entry(3, "c", "0:10"),
+            call_entry(1, "a", "0:30"),
+            call_entry(2, "b", "0:20"),
+        ];
+        sort_call_logs(&mut entries, CallLogColumn::Started, true);
+        assert_eq!(
+            entries.iter().map(|e| e.id).collect::<Vec<_>>(),
+            vec![1, 2, 3]
+        );
+        sort_call_logs(&mut entries, CallLogColumn::Started, false);
+        assert_eq!(
+            entries.iter().map(|e| e.id).collect::<Vec<_>>(),
+            vec![3, 2, 1]
+        );
+    }
+
+    #[test]
+    fn sort_call_logs_by_duration_is_numeric() {
+        let mut entries = vec![
+            call_entry(1, "a", "9:00"),
+            call_entry(2, "b", "10:00"),
+            call_entry(3, "c", "1:30"),
+        ];
+        sort_call_logs(&mut entries, CallLogColumn::Duration, true);
+        // 1:30 < 9:00 < 10:00 numerically (a lexical sort would mis-order these).
+        assert_eq!(
+            entries.iter().map(|e| e.id).collect::<Vec<_>>(),
+            vec![3, 1, 2]
+        );
+    }
+
+    #[test]
+    fn sort_call_logs_by_address_is_case_insensitive() {
+        let mut entries = vec![
+            call_entry(1, "Bob", "0:10"),
+            call_entry(2, "alice", "0:20"),
+            call_entry(3, "carol", "0:30"),
+        ];
+        sort_call_logs(&mut entries, CallLogColumn::Address, true);
+        assert_eq!(
+            entries
+                .iter()
+                .map(|e| e.address.as_str())
+                .collect::<Vec<_>>(),
+            vec!["alice", "Bob", "carol"]
+        );
     }
 }

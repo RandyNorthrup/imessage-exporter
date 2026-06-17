@@ -822,6 +822,30 @@ pub fn preview_annotation_text(text: impl Into<String>, is_from_me: bool) -> egu
     preview_meta_text(text, is_from_me).italics()
 }
 
+/// Frame for a conversation-list row. When `active` it is filled with the
+/// selection color so the conversation being previewed stands out.
+pub fn conversation_row_frame(active: bool) -> egui::Frame {
+    let frame = egui::Frame::none()
+        .inner_margin(egui::Margin::symmetric(4.0, 2.0))
+        .rounding(egui::Rounding::same(4.0));
+    if active {
+        frame.fill(palette::SELECTION_BG)
+    } else {
+        frame
+    }
+}
+
+/// Label text for a conversation row; the active (previewed) row is drawn in the
+/// accent color and bold so the selection is obvious.
+pub fn conversation_row_text(text: impl Into<String>, active: bool) -> egui::RichText {
+    let text = egui::RichText::new(text);
+    if active {
+        text.color(palette::ACCENT).strong()
+    } else {
+        text
+    }
+}
+
 fn stroke(color: egui::Color32) -> egui::Stroke {
     egui::Stroke::new(metric::BORDER_WIDTH, color)
 }
